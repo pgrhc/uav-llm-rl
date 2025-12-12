@@ -1,6 +1,0 @@
-source;share/uav_sensor_fusion/hook/pythonpath.ps1
-source;share/uav_sensor_fusion/hook/pythonpath.dsv
-source;share/uav_sensor_fusion/hook/pythonpath.sh
-source;share/uav_sensor_fusion/hook/ament_prefix_path.ps1
-source;share/uav_sensor_fusion/hook/ament_prefix_path.dsv
-source;share/uav_sensor_fusion/hook/ament_prefix_path.sh
