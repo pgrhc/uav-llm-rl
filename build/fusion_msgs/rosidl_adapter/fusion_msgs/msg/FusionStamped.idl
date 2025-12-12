@@ -1,0 +1,25 @@
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from fusion_msgs/msg/FusionStamped.msg
+// generated code does not contain a copyright notice
+
+#include "builtin_interfaces/msg/Time.idl"
+#include "fusion_msgs/msg/RadarPoints.idl"
+#include "nav_msgs/msg/Odometry.idl"
+#include "sensor_msgs/msg/Image.idl"
+#include "sensor_msgs/msg/PointCloud2.idl"
+
+module fusion_msgs {
+  module msg {
+    struct FusionStamped {
+      builtin_interfaces::msg::Time stamp;
+
+      sensor_msgs::msg::Image image;
+
+      sensor_msgs::msg::PointCloud2 lidar;
+
+      fusion_msgs::msg::RadarPoints radar;
+
+      nav_msgs::msg::Odometry odom;
+    };
+  };
+};

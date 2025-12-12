@@ -1,0 +1,21 @@
+[0.692s] Invoking command in '/home/ubuntu/Desktop/ros2_env/uav_ws/src/uav_sensor_fusion': PS1=(ros2_env) \[\e]0;\u@\h: \w\a\]${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ PYTHONPATH=/home/ubuntu/Desktop/ros2_env/uav_ws/build/uav_sensor_fusion/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/ubuntu/Desktop/ros2_env/uav_ws/install/uav_sensor_fusion/lib/python3.10/site-packages:${PYTHONPATH} VIRTUAL_ENV_PROMPT=(ros2_env) /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/uav_sensor_fusion build --build-base /home/ubuntu/Desktop/ros2_env/uav_ws/build/uav_sensor_fusion/build install --record /home/ubuntu/Desktop/ros2_env/uav_ws/build/uav_sensor_fusion/install.log --single-version-externally-managed install_data
+[0.978s] running egg_info
+[0.980s] writing ../../build/uav_sensor_fusion/uav_sensor_fusion.egg-info/PKG-INFO
+[0.980s] writing dependency_links to ../../build/uav_sensor_fusion/uav_sensor_fusion.egg-info/dependency_links.txt
+[0.981s] writing entry points to ../../build/uav_sensor_fusion/uav_sensor_fusion.egg-info/entry_points.txt
+[0.981s] writing requirements to ../../build/uav_sensor_fusion/uav_sensor_fusion.egg-info/requires.txt
+[0.981s] writing top-level names to ../../build/uav_sensor_fusion/uav_sensor_fusion.egg-info/top_level.txt
+[0.982s] reading manifest file '../../build/uav_sensor_fusion/uav_sensor_fusion.egg-info/SOURCES.txt'
+[0.984s] writing manifest file '../../build/uav_sensor_fusion/uav_sensor_fusion.egg-info/SOURCES.txt'
+[0.984s] running build
+[0.984s] running build_py
+[0.984s] running install
+[0.985s] running install_lib
+[0.985s] running install_data
+[0.986s] copying launch/gz_bridge.launch.py -> /home/ubuntu/Desktop/ros2_env/uav_ws/install/uav_sensor_fusion/share/uav_sensor_fusion/launch
+[0.986s] running install_egg_info
+[0.989s] removing '/home/ubuntu/Desktop/ros2_env/uav_ws/install/uav_sensor_fusion/lib/python3.10/site-packages/uav_sensor_fusion-0.0.0-py3.10.egg-info' (and everything under it)
+[0.990s] Copying ../../build/uav_sensor_fusion/uav_sensor_fusion.egg-info to /home/ubuntu/Desktop/ros2_env/uav_ws/install/uav_sensor_fusion/lib/python3.10/site-packages/uav_sensor_fusion-0.0.0-py3.10.egg-info
+[0.990s] running install_scripts
+[1.012s] writing list of installed files to '/home/ubuntu/Desktop/ros2_env/uav_ws/build/uav_sensor_fusion/install.log'
+[1.046s] Invoked command in '/home/ubuntu/Desktop/ros2_env/uav_ws/src/uav_sensor_fusion' returned '0': PS1=(ros2_env) \[\e]0;\u@\h: \w\a\]${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ PYTHONPATH=/home/ubuntu/Desktop/ros2_env/uav_ws/build/uav_sensor_fusion/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/ubuntu/Desktop/ros2_env/uav_ws/install/uav_sensor_fusion/lib/python3.10/site-packages:${PYTHONPATH} VIRTUAL_ENV_PROMPT=(ros2_env) /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/uav_sensor_fusion build --build-base /home/ubuntu/Desktop/ros2_env/uav_ws/build/uav_sensor_fusion/build install --record /home/ubuntu/Desktop/ros2_env/uav_ws/build/uav_sensor_fusion/install.log --single-version-externally-managed install_data

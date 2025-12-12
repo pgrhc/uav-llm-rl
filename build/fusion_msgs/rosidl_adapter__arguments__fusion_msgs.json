@@ -1,0 +1,8 @@
+{
+  "package_name": "fusion_msgs",
+  "non_idl_tuples": [
+    "/home/ubuntu/Desktop/ros2_env/uav_ws/src/fusion_msgs:msg/FusionStamped.msg",
+    "/home/ubuntu/Desktop/ros2_env/uav_ws/src/fusion_msgs:msg/RadarPoint.msg",
+    "/home/ubuntu/Desktop/ros2_env/uav_ws/src/fusion_msgs:msg/RadarPoints.msg"
+  ]
+}

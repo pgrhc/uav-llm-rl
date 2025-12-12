@@ -1,0 +1,144 @@
+[0.019s] Invoking command in '/home/ubuntu/Desktop/ros2_env/uav_ws/build/fusion_msgs': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/ubuntu/Desktop/ros2_env/uav_ws/install/uav_sensor_fusion:/home/ubuntu/Desktop/ros2_env/ws_sensor_combined/install/px4_offboard:/opt/ros/humble PS1=(ros2_env) \[\e]0;\u@\h: \w\a\]${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ VIRTUAL_ENV_PROMPT=(ros2_env) /usr/bin/cmake --build /home/ubuntu/Desktop/ros2_env/uav_ws/build/fusion_msgs -- -j4 -l4
+[0.085s] [  3%] Built target fusion_msgs__cpp
+[0.126s] [  3%] Built target ament_cmake_python_copy_fusion_msgs
+[0.156s] [ 12%] Built target fusion_msgs__rosidl_typesupport_fastrtps_cpp
+[0.187s] [ 22%] Built target fusion_msgs__rosidl_typesupport_introspection_cpp
+[0.453s] running egg_info
+[0.455s] writing fusion_msgs.egg-info/PKG-INFO
+[0.456s] writing dependency_links to fusion_msgs.egg-info/dependency_links.txt
+[0.456s] writing top-level names to fusion_msgs.egg-info/top_level.txt
+[0.456s] reading manifest file 'fusion_msgs.egg-info/SOURCES.txt'
+[0.457s] writing manifest file 'fusion_msgs.egg-info/SOURCES.txt'
+[0.495s] [ 22%] Built target ament_cmake_python_build_fusion_msgs_egg
+[0.525s] [ 32%] Built target fusion_msgs__rosidl_typesupport_cpp
+[0.555s] [ 41%] Built target fusion_msgs__rosidl_generator_c
+[0.585s] [ 51%] Built target fusion_msgs__rosidl_typesupport_fastrtps_c
+[0.612s] [ 61%] Built target fusion_msgs__rosidl_typesupport_c
+[0.642s] [ 70%] Built target fusion_msgs__rosidl_typesupport_introspection_c
+[0.667s] [ 70%] Built target fusion_msgs
+[0.696s] [ 74%] Built target fusion_msgs__py
+[0.729s] [ 80%] Built target fusion_msgs__rosidl_generator_py
+[0.757s] [ 87%] Built target fusion_msgs__rosidl_typesupport_fastrtps_c__pyext
+[0.785s] [ 93%] Built target fusion_msgs__rosidl_typesupport_c__pyext
+[0.816s] [100%] Built target fusion_msgs__rosidl_typesupport_introspection_c__pyext
+[0.830s] Invoked command in '/home/ubuntu/Desktop/ros2_env/uav_ws/build/fusion_msgs' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/ubuntu/Desktop/ros2_env/uav_ws/install/uav_sensor_fusion:/home/ubuntu/Desktop/ros2_env/ws_sensor_combined/install/px4_offboard:/opt/ros/humble PS1=(ros2_env) \[\e]0;\u@\h: \w\a\]${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ VIRTUAL_ENV_PROMPT=(ros2_env) /usr/bin/cmake --build /home/ubuntu/Desktop/ros2_env/uav_ws/build/fusion_msgs -- -j4 -l4
+[0.846s] Invoking command in '/home/ubuntu/Desktop/ros2_env/uav_ws/build/fusion_msgs': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/ubuntu/Desktop/ros2_env/uav_ws/install/uav_sensor_fusion:/home/ubuntu/Desktop/ros2_env/ws_sensor_combined/install/px4_offboard:/opt/ros/humble PS1=(ros2_env) \[\e]0;\u@\h: \w\a\]${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ VIRTUAL_ENV_PROMPT=(ros2_env) /usr/bin/cmake --install /home/ubuntu/Desktop/ros2_env/uav_ws/build/fusion_msgs
+[0.857s] -- Install configuration: ""
+[0.857s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/ament_index/resource_index/rosidl_interfaces/fusion_msgs
+[0.857s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs
+[0.857s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg
+[0.857s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/rosidl_generator_c__visibility_control.h
+[0.857s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail
+[0.858s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail/fusion_stamped__functions.h
+[0.858s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail/fusion_stamped__type_support.h
+[0.858s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail/fusion_stamped__struct.h
+[0.858s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail/fusion_stamped__functions.c
+[0.858s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/fusion_stamped.h
+[0.859s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/environment/library_path.sh
+[0.859s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/environment/library_path.dsv
+[0.859s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/libfusion_msgs__rosidl_generator_c.so
+[0.859s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs
+[0.859s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg
+[0.859s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail
+[0.859s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail/fusion_stamped__rosidl_typesupport_fastrtps_c.h
+[0.859s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/rosidl_typesupport_fastrtps_c__visibility_control.h
+[0.859s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/libfusion_msgs__rosidl_typesupport_fastrtps_c.so
+[0.859s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs
+[0.859s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg
+[0.860s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/rosidl_typesupport_introspection_c__visibility_control.h
+[0.860s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail
+[0.860s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail/fusion_stamped__rosidl_typesupport_introspection_c.h
+[0.860s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail/fusion_stamped__type_support.c
+[0.860s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/libfusion_msgs__rosidl_typesupport_introspection_c.so
+[0.860s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/libfusion_msgs__rosidl_typesupport_c.so
+[0.860s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs
+[0.861s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg
+[0.861s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/rosidl_generator_cpp__visibility_control.hpp
+[0.861s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail
+[0.861s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail/fusion_stamped__type_support.hpp
+[0.861s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail/fusion_stamped__traits.hpp
+[0.861s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail/fusion_stamped__builder.hpp
+[0.862s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail/fusion_stamped__struct.hpp
+[0.862s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/fusion_stamped.hpp
+[0.862s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs
+[0.862s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg
+[0.862s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/rosidl_typesupport_fastrtps_cpp__visibility_control.h
+[0.863s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail
+[0.863s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail/dds_fastrtps
+[0.863s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail/fusion_stamped__rosidl_typesupport_fastrtps_cpp.hpp
+[0.863s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/libfusion_msgs__rosidl_typesupport_fastrtps_cpp.so
+[0.863s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs
+[0.863s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg
+[0.863s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail
+[0.863s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail/fusion_stamped__rosidl_typesupport_introspection_cpp.hpp
+[0.863s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/include/fusion_msgs/fusion_msgs/msg/detail/fusion_stamped__type_support.cpp
+[0.863s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/libfusion_msgs__rosidl_typesupport_introspection_cpp.so
+[0.863s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/libfusion_msgs__rosidl_typesupport_cpp.so
+[0.863s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/environment/pythonpath.sh
+[0.863s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/environment/pythonpath.dsv
+[0.863s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs-0.0.0-py3.10.egg-info
+[0.864s] -- Installing: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs-0.0.0-py3.10.egg-info/top_level.txt
+[0.864s] -- Installing: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs-0.0.0-py3.10.egg-info/SOURCES.txt
+[0.864s] -- Installing: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs-0.0.0-py3.10.egg-info/PKG-INFO
+[0.864s] -- Installing: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs-0.0.0-py3.10.egg-info/dependency_links.txt
+[0.865s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs
+[0.865s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs/_fusion_msgs_s.ep.rosidl_typesupport_c.c
+[0.865s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs/_fusion_msgs_s.ep.rosidl_typesupport_fastrtps_c.c
+[0.865s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs/__init__.py
+[0.865s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs/libfusion_msgs__rosidl_generator_py.so
+[0.865s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs/_fusion_msgs_s.ep.rosidl_typesupport_introspection_c.c
+[0.865s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs/fusion_msgs_s__rosidl_typesupport_c.cpython-310-x86_64-linux-gnu.so
+[0.865s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs/fusion_msgs_s__rosidl_typesupport_fastrtps_c.cpython-310-x86_64-linux-gnu.so
+[0.865s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs/msg
+[0.865s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs/msg/_fusion_stamped_s.c
+[0.866s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs/msg/__init__.py
+[0.866s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs/msg/_fusion_stamped.py
+[0.866s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs/fusion_msgs_s__rosidl_typesupport_introspection_c.cpython-310-x86_64-linux-gnu.so
+[0.911s] Listing '/home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs'...
+[0.911s] Listing '/home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs/msg'...
+[0.915s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs/fusion_msgs_s__rosidl_typesupport_fastrtps_c.cpython-310-x86_64-linux-gnu.so
+[0.915s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs/fusion_msgs_s__rosidl_typesupport_introspection_c.cpython-310-x86_64-linux-gnu.so
+[0.917s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/python3.10/site-packages/fusion_msgs/fusion_msgs_s__rosidl_typesupport_c.cpython-310-x86_64-linux-gnu.so
+[0.917s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/lib/libfusion_msgs__rosidl_generator_py.so
+[0.918s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/msg/FusionStamped.idl
+[0.918s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/msg/FusionStamped.msg
+[0.918s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/ament_index/resource_index/package_run_dependencies/fusion_msgs
+[0.918s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/ament_index/resource_index/parent_prefix_path/fusion_msgs
+[0.918s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/environment/ament_prefix_path.sh
+[0.918s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/environment/ament_prefix_path.dsv
+[0.918s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/environment/path.sh
+[0.918s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/environment/path.dsv
+[0.918s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/local_setup.bash
+[0.918s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/local_setup.sh
+[0.918s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/local_setup.zsh
+[0.919s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/local_setup.dsv
+[0.922s] -- Installing: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/package.dsv
+[0.922s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/ament_index/resource_index/packages/fusion_msgs
+[0.922s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/export_fusion_msgs__rosidl_generator_cExport.cmake
+[0.922s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/export_fusion_msgs__rosidl_generator_cExport-noconfig.cmake
+[0.922s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/export_fusion_msgs__rosidl_typesupport_fastrtps_cExport.cmake
+[0.922s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/export_fusion_msgs__rosidl_typesupport_fastrtps_cExport-noconfig.cmake
+[0.922s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/fusion_msgs__rosidl_typesupport_introspection_cExport.cmake
+[0.922s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/fusion_msgs__rosidl_typesupport_introspection_cExport-noconfig.cmake
+[0.922s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/fusion_msgs__rosidl_typesupport_cExport.cmake
+[0.922s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/fusion_msgs__rosidl_typesupport_cExport-noconfig.cmake
+[0.922s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/export_fusion_msgs__rosidl_generator_cppExport.cmake
+[0.922s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/export_fusion_msgs__rosidl_typesupport_fastrtps_cppExport.cmake
+[0.923s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/export_fusion_msgs__rosidl_typesupport_fastrtps_cppExport-noconfig.cmake
+[0.923s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/fusion_msgs__rosidl_typesupport_introspection_cppExport.cmake
+[0.923s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/fusion_msgs__rosidl_typesupport_introspection_cppExport-noconfig.cmake
+[0.923s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/fusion_msgs__rosidl_typesupport_cppExport.cmake
+[0.923s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/fusion_msgs__rosidl_typesupport_cppExport-noconfig.cmake
+[0.923s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/export_fusion_msgs__rosidl_generator_pyExport.cmake
+[0.923s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/export_fusion_msgs__rosidl_generator_pyExport-noconfig.cmake
+[0.923s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/rosidl_cmake-extras.cmake
+[0.923s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/ament_cmake_export_dependencies-extras.cmake
+[0.923s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/ament_cmake_export_include_directories-extras.cmake
+[0.923s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/ament_cmake_export_libraries-extras.cmake
+[0.923s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/ament_cmake_export_targets-extras.cmake
+[0.923s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/rosidl_cmake_export_typesupport_targets-extras.cmake
+[0.923s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/rosidl_cmake_export_typesupport_libraries-extras.cmake
+[0.923s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/fusion_msgsConfig.cmake
+[0.924s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/cmake/fusion_msgsConfig-version.cmake
+[0.924s] -- Up-to-date: /home/ubuntu/Desktop/ros2_env/uav_ws/install/fusion_msgs/share/fusion_msgs/package.xml
+[0.929s] Invoked command in '/home/ubuntu/Desktop/ros2_env/uav_ws/build/fusion_msgs' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/ubuntu/Desktop/ros2_env/uav_ws/install/uav_sensor_fusion:/home/ubuntu/Desktop/ros2_env/ws_sensor_combined/install/px4_offboard:/opt/ros/humble PS1=(ros2_env) \[\e]0;\u@\h: \w\a\]${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ VIRTUAL_ENV_PROMPT=(ros2_env) /usr/bin/cmake --install /home/ubuntu/Desktop/ros2_env/uav_ws/build/fusion_msgs

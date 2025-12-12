@@ -1,0 +1,24 @@
+[2.023s] Invoking command in '/home/ubuntu/Desktop/ros2_env/uav_ws/src/drone_control': PS1=(ros2_env) \[\e]0;\u@\h: \w\a\]${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ PYTHONPATH=/home/ubuntu/Desktop/ros2_env/uav_ws/build/drone_control/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/ubuntu/Desktop/ros2_env/uav_ws/install/drone_control/lib/python3.10/site-packages:${PYTHONPATH} VIRTUAL_ENV_PROMPT=(ros2_env) /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/drone_control build --build-base /home/ubuntu/Desktop/ros2_env/uav_ws/build/drone_control/build install --record /home/ubuntu/Desktop/ros2_env/uav_ws/build/drone_control/install.log --single-version-externally-managed install_data
+[2.828s] running egg_info
+[2.832s] writing ../../build/drone_control/drone_control.egg-info/PKG-INFO
+[2.832s] writing dependency_links to ../../build/drone_control/drone_control.egg-info/dependency_links.txt
+[2.832s] writing entry points to ../../build/drone_control/drone_control.egg-info/entry_points.txt
+[2.832s] writing requirements to ../../build/drone_control/drone_control.egg-info/requires.txt
+[2.832s] writing top-level names to ../../build/drone_control/drone_control.egg-info/top_level.txt
+[2.840s] reading manifest file '../../build/drone_control/drone_control.egg-info/SOURCES.txt'
+[2.840s] writing manifest file '../../build/drone_control/drone_control.egg-info/SOURCES.txt'
+[2.841s] running build
+[2.841s] running build_py
+[2.842s] copying drone_control/offboard_control.py -> /home/ubuntu/Desktop/ros2_env/uav_ws/build/drone_control/build/lib/drone_control
+[2.842s] running install
+[2.853s] running install_lib
+[2.855s] copying /home/ubuntu/Desktop/ros2_env/uav_ws/build/drone_control/build/lib/drone_control/offboard_control.py -> /home/ubuntu/Desktop/ros2_env/uav_ws/install/drone_control/lib/python3.10/site-packages/drone_control
+[2.855s] byte-compiling /home/ubuntu/Desktop/ros2_env/uav_ws/install/drone_control/lib/python3.10/site-packages/drone_control/offboard_control.py to offboard_control.cpython-310.pyc
+[2.857s] running install_data
+[2.861s] running install_egg_info
+[2.862s] removing '/home/ubuntu/Desktop/ros2_env/uav_ws/install/drone_control/lib/python3.10/site-packages/drone_control-0.0.0-py3.10.egg-info' (and everything under it)
+[2.862s] Copying ../../build/drone_control/drone_control.egg-info to /home/ubuntu/Desktop/ros2_env/uav_ws/install/drone_control/lib/python3.10/site-packages/drone_control-0.0.0-py3.10.egg-info
+[2.865s] running install_scripts
+[2.924s] Installing offboard_control script to /home/ubuntu/Desktop/ros2_env/uav_ws/install/drone_control/lib/drone_control
+[2.925s] writing list of installed files to '/home/ubuntu/Desktop/ros2_env/uav_ws/build/drone_control/install.log'
+[3.511s] Invoked command in '/home/ubuntu/Desktop/ros2_env/uav_ws/src/drone_control' returned '0': PS1=(ros2_env) \[\e]0;\u@\h: \w\a\]${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ PYTHONPATH=/home/ubuntu/Desktop/ros2_env/uav_ws/build/drone_control/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/ubuntu/Desktop/ros2_env/uav_ws/install/drone_control/lib/python3.10/site-packages:${PYTHONPATH} VIRTUAL_ENV_PROMPT=(ros2_env) /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/drone_control build --build-base /home/ubuntu/Desktop/ros2_env/uav_ws/build/drone_control/build install --record /home/ubuntu/Desktop/ros2_env/uav_ws/build/drone_control/install.log --single-version-externally-managed install_data

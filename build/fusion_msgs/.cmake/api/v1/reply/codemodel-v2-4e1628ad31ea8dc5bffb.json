@@ -1,0 +1,233 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"childIndexes" : 
+					[
+						1
+					],
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-.-8434393496d8be90b78c.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						5,
+						6,
+						7,
+						8,
+						9,
+						10,
+						11,
+						12,
+						13,
+						14,
+						15,
+						16,
+						17
+					]
+				},
+				{
+					"build" : "fusion_msgs__py",
+					"jsonFile" : "directory-fusion_msgs__py-a14ea0fa4ca039ce5b72.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"parentIndex" : 0,
+					"projectIndex" : 0,
+					"source" : "/home/ubuntu/Desktop/ros2_env/uav_ws/build/fusion_msgs/fusion_msgs__py",
+					"targetIndexes" : 
+					[
+						4
+					]
+				}
+			],
+			"name" : "",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0,
+						1
+					],
+					"name" : "fusion_msgs",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						8,
+						9,
+						10,
+						11,
+						12,
+						13,
+						14,
+						15,
+						16,
+						17
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "ament_cmake_python_build_fusion_msgs_egg::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ament_cmake_python_build_fusion_msgs_egg-c5121b696cdb4ac068cd.json",
+					"name" : "ament_cmake_python_build_fusion_msgs_egg",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ament_cmake_python_copy_fusion_msgs::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ament_cmake_python_copy_fusion_msgs-90e13e7fa443f6537ef4.json",
+					"name" : "ament_cmake_python_copy_fusion_msgs",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "fusion_msgs::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-fusion_msgs-65f52983a43b2136c590.json",
+					"name" : "fusion_msgs",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "fusion_msgs__cpp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-fusion_msgs__cpp-685dfc409070aed50b04.json",
+					"name" : "fusion_msgs__cpp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 1,
+					"id" : "fusion_msgs__py::@f5be92c8df8aebf3cf5a",
+					"jsonFile" : "target-fusion_msgs__py-ac9d06f27fa00bdae245.json",
+					"name" : "fusion_msgs__py",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "fusion_msgs__rosidl_generator_c::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-fusion_msgs__rosidl_generator_c-f04db8a0e92790841160.json",
+					"name" : "fusion_msgs__rosidl_generator_c",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "fusion_msgs__rosidl_generator_py::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-fusion_msgs__rosidl_generator_py-dfebba153b64462ca924.json",
+					"name" : "fusion_msgs__rosidl_generator_py",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "fusion_msgs__rosidl_typesupport_c::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-fusion_msgs__rosidl_typesupport_c-39f7e219a876c389f9e0.json",
+					"name" : "fusion_msgs__rosidl_typesupport_c",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "fusion_msgs__rosidl_typesupport_c__pyext::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-fusion_msgs__rosidl_typesupport_c__pyext-a48833f25bb360b1be39.json",
+					"name" : "fusion_msgs__rosidl_typesupport_c__pyext",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "fusion_msgs__rosidl_typesupport_cpp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-fusion_msgs__rosidl_typesupport_cpp-8f769a610be1a63a6178.json",
+					"name" : "fusion_msgs__rosidl_typesupport_cpp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "fusion_msgs__rosidl_typesupport_fastrtps_c::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-fusion_msgs__rosidl_typesupport_fastrtps_c-f61e6cf0c7999b2f8513.json",
+					"name" : "fusion_msgs__rosidl_typesupport_fastrtps_c",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "fusion_msgs__rosidl_typesupport_fastrtps_c__pyext::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-fusion_msgs__rosidl_typesupport_fastrtps_c__pyext-de6a760683dd2635c4f8.json",
+					"name" : "fusion_msgs__rosidl_typesupport_fastrtps_c__pyext",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "fusion_msgs__rosidl_typesupport_fastrtps_cpp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-fusion_msgs__rosidl_typesupport_fastrtps_cpp-e05004fd6fb18c0c0f56.json",
+					"name" : "fusion_msgs__rosidl_typesupport_fastrtps_cpp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "fusion_msgs__rosidl_typesupport_introspection_c::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-fusion_msgs__rosidl_typesupport_introspection_c-50cd0c87cc5d43893c5e.json",
+					"name" : "fusion_msgs__rosidl_typesupport_introspection_c",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "fusion_msgs__rosidl_typesupport_introspection_c__pyext::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-fusion_msgs__rosidl_typesupport_introspection_c__pyext-a79bba9738e19863d434.json",
+					"name" : "fusion_msgs__rosidl_typesupport_introspection_c__pyext",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "fusion_msgs__rosidl_typesupport_introspection_cpp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-fusion_msgs__rosidl_typesupport_introspection_cpp-e5c5c68626e4eab3bda5.json",
+					"name" : "fusion_msgs__rosidl_typesupport_introspection_cpp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "fusion_msgs_uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-fusion_msgs_uninstall-b0e8a47bcb38f400b663.json",
+					"name" : "fusion_msgs_uninstall",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-uninstall-bd4ea76b29a2a831b74c.json",
+					"name" : "uninstall",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/ubuntu/Desktop/ros2_env/uav_ws/build/fusion_msgs",
+		"source" : "/home/ubuntu/Desktop/ros2_env/uav_ws/src/fusion_msgs"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 3
+	}
+}
