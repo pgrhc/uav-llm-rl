@@ -96,7 +96,7 @@ class BEVImageNode(Node):
 
         try:
             tf_lidar_to_odom = self.tf_buffer.lookup_transform(
-                "odom",
+                "base_link",
                 self.latest_lidar.header.frame_id,
                 rclpy.time.Time(),
             )
@@ -126,7 +126,7 @@ class BEVImageNode(Node):
             try:
                 # Radarın frame_id'sinden odom'a dönüşüm al (örn: radar_link -> odom)
                 tf_radar_to_odom = self.tf_buffer.lookup_transform(
-                    "odom",
+                    "base_link",
                     self.latest_radar.header.frame_id,
                     rclpy.time.Time()
                 )
@@ -159,7 +159,7 @@ class BEVImageNode(Node):
         # ========== 2) YOLO DETEKSIYONLARINI BEV'E PROJE ET ==========
         try:
             tf_cam_to_odom = self.tf_buffer.lookup_transform(
-                "odom",          # target
+                "base_link",          # target
                 "camera_link",   # source
                 rclpy.time.Time(),
             )
@@ -179,59 +179,57 @@ class BEVImageNode(Node):
             cam_origin_cam, tf_cam_to_odom
         )
 
-        x0 = cam_origin_odom.point.x
-        y0 = cam_origin_odom.point.y
-        z0 = cam_origin_odom.point.z
+        x0 = tf_cam_to_odom.transform.translation.x
+        y0 = tf_cam_to_odom.transform.translation.y
+        z0 = tf_cam_to_odom.transform.translation.z
 
         for det in self.latest_yolo.detections:
+            # Tip: Objenin 'ayak' bastığı yeri bulmak için bottom-center kullanıyoruz
             u = det.bbox.center.position.x
-            v = det.bbox.center.position.y
+            v = det.bbox.center.position.y + (det.bbox.size_y / 2.0) # Alt kenar
 
-            # ---- pixel -> ray (kamera ekseninde) ----
-            Xc = 1.0
-            Yc = -(u - self.cx) / self.fx
-            Zc = (v - self.cy) / self.fy
+            # 1. Pixel -> Camera Ray (Standard Pinhole Model)
+            # ROS Camera Frame: Z forward, X right, Y down
+            ray_x = (u - self.cx) / self.fx
+            ray_y = (v - self.cy) / self.fy
+            ray_z = 1.0 
 
-            # Kamerada, ray üzerinde uzak bir nokta (t=10m)
-            far_cam = PointStamped()
-            far_cam.header.frame_id = "camera_link"
-            far_cam.point.x = float(Xc * 10.0)
-            far_cam.point.y = float(Yc * 10.0)
-            far_cam.point.z = float(Zc * 10.0)
+            # 2. Ray'i Odom frame'ine çevir
+            # Ray ucunda bir nokta oluşturup transform ediyoruz
+            pt_ray_cam = PointStamped()
+            pt_ray_cam.header.frame_id = "camera_link"
+            pt_ray_cam.point.x = ray_x
+            pt_ray_cam.point.y = ray_y
+            pt_ray_cam.point.z = ray_z
 
             try:
-                far_odom = tf2_geometry_msgs.do_transform_point(
-                    far_cam, tf_cam_to_odom
-                )
+                pt_ray_odom = tf2_geometry_msgs.do_transform_point(pt_ray_cam, tf_cam_to_odom)
             except Exception:
                 continue
 
-            x1 = far_odom.point.x
-            y1 = far_odom.point.y
-            z1 = far_odom.point.z
+            # Ray vektörü (Odom frame'de)
+            dx = pt_ray_odom.point.x - x0
+            dy = pt_ray_odom.point.y - y0
+            dz = pt_ray_odom.point.z - z0
 
-            dz = z1 - z0
-            if abs(dz) < 1e-3:
-                # ray yere paralel gibi, kesişim yok say
+            # 3. Yer düzlemi (Z=0) ile kesişim
+            # Denklem: z0 + s * dz = 0  =>  s = -z0 / dz
+            if abs(dz) < 1e-4: # Ray yere paralel ise atla
                 continue
 
-            # z=0 yer düzlemi ile kesişim parametresi
             s = -z0 / dz
-            s = s*1.1
+            
+            # Sadece drone'un önündeki ve makul uzaklıktaki noktaları çiz
+            if s > 0:
+                xw = x0 + s * dx
+                yw = y0 + s * dy
 
-            Xw = x0 + s * (x1 - x0)
-            Yw = y0 + s * (y1 - y0)
-            # Zw zaten 0
+                bx = int(xw / self.res + self.grid_size / 2)
+                by = int(yw / self.res + self.grid_size / 2)
 
-            bx = int(Xw / self.res + self.grid_size / 2)
-            by = int(Yw / self.res + self.grid_size / 2)
-
-            if 0 <= bx < self.grid_size and 0 <= by < self.grid_size:
-                cv2.circle(bev, (bx, by), 4, (0, 0, 255), -1)  # RED = YOLO BEV
-
-        # (Opsiyonel) drone merkezini çiz
-        cv2.circle(bev, (self.grid_size // 2, self.grid_size // 2),
-                   4, (255, 0, 0), -1)
+                if 0 <= bx < self.grid_size and 0 <= by < self.grid_size:
+                    # Daha belirgin olması için 5px kırmızı daire
+                    cv2.circle(bev, (bx, by), 5, (0, 0, 255), -1)
         bev = np.flipud(bev)
         img_msg = self.bridge.cv2_to_imgmsg(bev, encoding="bgr8")
         self.pub.publish(img_msg)
