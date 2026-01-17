@@ -1,0 +1,64 @@
+rtabmap:
+  ros__parameters:
+    # --- 1. GENERAL ---
+    use_sim_time: true
+    approx_sync: true
+    queue_size: 20
+    
+    # --- 2. FRAMES (Must match SLAM Toolbox) ---
+    frame_id: base_link
+    odom_frame_id: odom
+    map_frame_id: map
+    publish_tf: true          # RTAB-Map publishes map -> odom
+
+    # --- 3. ODOMETRY (Trust your EKF) ---
+    # SLAM Toolbox used this topic, so we will too.
+    odom_topic: /odometry/filtered
+    qos_odom: 2               # Match simulation QoS
+    
+    # CRITICAL: Disable internal odometry. Trust the EKF.
+    icp_odometry: false
+    
+    # --- 4. SENSORS (LIDAR ONLY) ---
+    subscribe_scan: true
+    scan_topic: /world/default/model/x500_mono_cam_0/link/link/sensor/lidar_2d_v2/scan
+    qos_scan: 2
+
+    # DISABLE CAMERAS (This was the cause of your sync/lag issues)
+    subscribe_depth: false
+    subscribe_rgbd: false
+    subscribe_rgb: false      # Explicitly OFF
+    subscribe_stereo: false
+
+    # --- 5. MAPPING STRATEGY (Mimic SLAM Toolbox) ---
+    
+    # Strategy 1 = ICP (Lidar Matching)
+    Reg/Strategy: "1" 
+    
+    # Force 2D Mode (Like SLAM Toolbox "mode: mapping")
+    Reg/Force3DoF: "true"
+    Optimizer/Slam2D: "true"
+
+    RGBD/LinearUpdate: "0"
+    RGBD/AngularUpdate: "0"
+    
+    # Optional: Limit how fast it processes to save CPU (e.g., 2 times per second)
+    # If this is too high with Update=0, it might lag. "2" is usually safe.
+    Rtabmap/DetectionRate: "2"
+    
+    # Snapping "Magnet" Settings
+    # SLAM Toolbox uses 0.5m correlation. We match it.
+    Icp/VoxelSize: "0.05"
+    Icp/MaxCorrespondenceDistance: "0.5" 
+    Icp/PointToPlane: "true"
+    Icp/Iterations: "30"
+    
+    # Map Cleanup
+    Grid/FromScan: "true"
+    Grid/RangeMax: "20.0"     # Matches your SLAM Toolbox max range
+    Grid/CellSize: "0.05"     # Matches your SLAM Toolbox resolution
+    Grid/RayTracing: "true"
+    
+    # Memory
+    delete_db_on_start: true
+    Mem/IncrementalMemory: "true"

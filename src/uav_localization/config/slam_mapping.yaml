@@ -1,0 +1,45 @@
+slam_toolbox:
+  ros__parameters:
+    # Plugin params
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY #  Internal math method
+    ceres_preconditioner: SCHUR_JACOBI #  Helps the solver work faster
+    ceres_trust_strategy: LEVENBERG_MARQUARDT #  Makes movements safe and stable
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+    
+    #ros params
+    use_sim_time: true
+    mode: mapping
+    map_frame: map
+    odom_frame: odom
+    base_frame: base_link
+    scan_topic: /world/default/model/x500_mono_cam_0/link/link/sensor/lidar_2d_v2/scan
+
+    throttle_scans: 1 # use every scan
+    max_laser_range: 20.0 # ignore scans beyond 20m
+    resolution: 0.05 # map cell size 5 cm
+    minimum_time_interval: 0.05 # SLAM updates at most 20 per second
+    transform_publish_period: 0.02 # how often robot pose published
+   # map_update_interval: 0.1
+    do_loop_closing: false
+
+    use_scan_matching: true # SLAM aligns laser scans with map
+    use_scan_barycenter: true # Stabilizes scan matching
+    minimum_travel_distance: 0.05  # Update after moving 5cm (instead of 0)
+    minimum_travel_heading: 0.05  # Update after turning slightly
+    correlation_search_space_dimension: 0.5 # Look 0.5 m around expected position
+    correlation_search_space_resolution: 0.01 # Check every 1 cm
+    correlation_search_space_smear_deviation: 0.1
+
+    link_match_minimum_response_fine: 0.1  # Threshold for accepting a “fine” match response when creating constraints between nearby scans (linking)
+    link_scan_maximum_distance: 1.5        # Maximum distance (meters) between scans to try linking/matching them.
+    loop_search_maximum_distance: 3.0 # Search within 3 meters for old places
+    loop_match_minimum_chain_size: 10      # Easier loop closure
+    loop_match_maximum_variance_coarse: 3.0  # Maximum allowed variance (uncertainty) at coarse stage.
+    loop_match_minimum_response_coarse: 0.35
+    
+
+    scan_buffer_size: 10
+    tf_buffer_duration: 30.0 # TF cache length (seconds)
+    transform_timeout: 0.5 # How long SLAM waits for TF data

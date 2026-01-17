@@ -2,8 +2,8 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch_ros.actions import SetParameter
 
-ld = LaunchDescription()
-ld.add_action(SetParameter(name="use_sim_time", value=True))
+# ld = LaunchDescription()
+# ld.add_action(SetParameter(name="use_sim_time", value=True))
 
 
 def generate_launch_description():
@@ -87,6 +87,7 @@ def generate_launch_description():
         executable="px4_odom_bridge",
         name="px4_odom_bridge",
         output="screen",
+        parameters=[{'use_sim_time': True}]
     )
 
     # 3) EKF (robot_localization)
@@ -98,6 +99,7 @@ def generate_launch_description():
         parameters=[
             
             "/home/ubuntu/Desktop/ros2_env/uav_ws/config/ekf_uav.yaml"
+           
         ],
     )
     radar_filter = Node(
@@ -160,6 +162,7 @@ def generate_launch_description():
     )
     
     return LaunchDescription([
+        SetParameter(name="use_sim_time", value=True),
         imu_bridge,
         camera_bridge,
         camera_info_bridge,

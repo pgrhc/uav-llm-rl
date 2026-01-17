@@ -11,9 +11,13 @@ setup(
         ['resource/uav_localization']),
     ('share/uav_localization', ['package.xml']),
     ('share/uav_localization/launch',
-        ['launch/localization.launch.py']),
+        ['launch/uav_slam.launch.py']),
+    ('share/uav_localization/launch',
+        ['launch/uav_rtabmap.launch.py']),
     ('share/uav_localization/config',
-        ['config/slam_localization.yaml']),
+        ['config/slam_mapping.yaml']),
+    ('share/uav_localization/config',
+        ['config/rtabmap_uav.yaml']),
 ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -28,6 +32,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            "scan_filtered = uav_localization.scan_filtered:main",
         ],
     },
 )
