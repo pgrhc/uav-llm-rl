@@ -31,9 +31,11 @@ setup(
             "radar_filter = uav_sensor_fusion.radar_filter:main",
             "cloud_saver = uav_sensor_fusion.cloud_saver:main",
             "sensor_fusion_sync = uav_sensor_fusion.sensor_fusion_sync:main",
-            "bev_node = uav_sensor_fusion.bev_node:main",
+            "bev_node = uav_sensor_fusion.bev:main",
             "yolo_node = uav_sensor_fusion.yolo_node:main",
             "bev_projection_node = uav_sensor_fusion.bev_projection_node:main",
+            "threat_encoder_node = uav_sensor_fusion.threat_encoder_node:main",
+             
         ],
     },
 )

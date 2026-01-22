@@ -160,6 +160,20 @@ def generate_launch_description():
         output="screen",
         parameters=[{'use_sim_time': True}]
     )
+    bev_node = Node(
+        package="uav_sensor_fusion",
+        executable="bev_node",
+        name="bev_node",
+        output="screen",
+        parameters=[{'use_sim_time': True}]
+    )
+    threat_encoder_node = Node(
+        package="uav_sensor_fusion",
+        executable="threat_encoder_node",
+        name="threat_encoder_node",
+        output="screen",
+        parameters=[{'use_sim_time': True}]
+    )
     
     return LaunchDescription([
         SetParameter(name="use_sim_time", value=True),
@@ -178,6 +192,8 @@ def generate_launch_description():
         clock_bridge,
         sync_node,
         yolo_node,
+        #bev_node,
         bev_proj_node,
+        threat_encoder_node
         
     ])
