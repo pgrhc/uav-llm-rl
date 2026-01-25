@@ -27,6 +27,8 @@ setup(
             "offboard_control = drone_control.offboard_control:main",
             "q_learn = drone_control.q_learn:main",
             "train = drone_control.train:main",
+            "maze_navigator = drone_control.maze_navigator:main",
+
         ],
     },
 )
