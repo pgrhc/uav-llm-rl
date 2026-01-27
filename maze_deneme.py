@@ -4,7 +4,7 @@ import time
 import subprocess
 
 WORLD_NAME = "default"
-WALL_HEIGHT = 5.0
+WALL_HEIGHT = 7.0
 WALL_THICKNESS = 0.2
 CELL_SIZE = 5.0
 Z_CENTER = WALL_HEIGHT / 2

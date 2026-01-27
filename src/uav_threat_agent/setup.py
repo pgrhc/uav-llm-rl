@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'drone_control'
+package_name = 'uav_threat_agent'
 
 setup(
     name=package_name,
@@ -14,7 +14,7 @@ setup(
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='ubuntu',
-    maintainer_email='ubuntu@todo.todo',
+    maintainer_email='samwnchstrgl@gmail.com',
     description='TODO: Package description',
     license='TODO: License declaration',
     extras_require={
@@ -24,12 +24,9 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            "offboard_control = drone_control.offboard_control:main",
-            "q_learn = drone_control.q_learn:main",
-            "train = drone_control.train:main",
-            "maze_navigator = drone_control.maze_navigator:main",
-            "follow_path = drone_control.follow_path:main",
-
+            'train = uav_threat_agent.nodes.train_debug_node:main',
+            # Canlı ajanı çalıştırmak için (threat_agent_node.py içindeki main fonksiyonu)
+            'inference = uav_threat_agent.nodes.threat_agent_node:main',
         ],
     },
 )

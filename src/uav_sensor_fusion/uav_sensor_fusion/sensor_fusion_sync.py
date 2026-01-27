@@ -49,9 +49,9 @@ class SensorFusionSync(Node):
         self.pub = self.create_publisher(FusionStamped, "/fusion/data", 10)
         self.timer = self.create_timer(0.1, self.publish_fused)
 
-        # Rosbag recording başlat
-        self.rosbag_process = None
-        self.start_rosbag_recording()
+        # # Rosbag recording başlat
+        # self.rosbag_process = None
+        # self.start_rosbag_recording()
 
         self.get_logger().info("Sensor Fusion Sync (robust) node started.")
 
@@ -121,37 +121,37 @@ class SensorFusionSync(Node):
 
         self.pub.publish(msg)
 
-    def start_rosbag_recording(self):
-        """Rosbag recording başlat"""
-        bag_dir = "/home/ubuntu/rosbags"  # veya istediğiniz dizin
-        os.makedirs(bag_dir, exist_ok=True)
+    # def start_rosbag_recording(self):
+    #     """Rosbag recording başlat"""
+    #     bag_dir = "/home/ubuntu/rosbags"  # veya istediğiniz dizin
+    #     os.makedirs(bag_dir, exist_ok=True)
 
-        topics = [
-            "/fusion/data",
-            "/threat/state_vec",
-            "/odometry/filtered",
-            "/world/default/model/x500_mono_cam_0/link/camera_link/sensor/camera/image",
-            "/world/default/model/x500_mono_cam_0/link/link/sensor/lidar_2d_v2/scan/points",
-            "/radar/points_filtered_radarmsg"
-        ]
+    #     topics = [
+    #         "/fusion/data",
+    #         "/threat/state_vec",
+    #         "/odometry/filtered",
+    #         "/world/default/model/x500_mono_cam_0/link/camera_link/sensor/camera/image",
+    #         "/world/default/model/x500_mono_cam_0/link/link/sensor/lidar_2d_v2/scan/points",
+    #         "/radar/points_filtered_radarmsg"
+    #     ]
 
-        cmd = ["ros2", "bag", "record", "-o", f"{bag_dir}/uav_session", "--compression-mode", "file"] + topics
+    #     cmd = ["ros2", "bag", "record", "-o", f"{bag_dir}/uav_session", "--compression-mode", "file"] + topics
 
-        try:
-            self.rosbag_process = subprocess.Popen(cmd)
-            self.get_logger().info("Rosbag recording started")
-        except Exception as e:
-            self.get_logger().error(f"Failed to start rosbag recording: {e}")
+    #     try:
+    #         self.rosbag_process = subprocess.Popen(cmd)
+    #         self.get_logger().info("Rosbag recording started")
+    #     except Exception as e:
+    #         self.get_logger().error(f"Failed to start rosbag recording: {e}")
 
-    def stop_rosbag_recording(self):
-        """Rosbag recording durdur"""
-        if self.rosbag_process:
-            self.rosbag_process.terminate()
-            self.rosbag_process.wait()
-            self.get_logger().info("Rosbag recording stopped")
+    # def stop_rosbag_recording(self):
+    #     """Rosbag recording durdur"""
+    #     if self.rosbag_process:
+    #         self.rosbag_process.terminate()
+    #         self.rosbag_process.wait()
+    #         self.get_logger().info("Rosbag recording stopped")
 
-    def __del__(self):
-        self.stop_rosbag_recording()
+    # def __del__(self):
+    #     self.stop_rosbag_recording()
 
 def main(args=None):
     rclpy.init(args=args)
