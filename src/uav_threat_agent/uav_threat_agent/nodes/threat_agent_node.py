@@ -27,7 +27,7 @@ def main(args=None):
     # 2. EĞİTİLMİŞ MODELİ YÜKLE
     # BURAYA DİKKAT: Ekran görüntüsündeki modelin tam yolunu yaz.
     # Eğer dosya .zip ise uzantıyı ekle, klasör ise sonuna / koyma.
-    model_path = "/home/ubuntu/Desktop/ros2_env/models/PPO/20480.zip" 
+    model_path = "/home/ubuntu/Desktop/ros2_env/models/PPO/8192.zip" 
     
     # Model dosyasının varlığını kontrol et
     if not os.path.exists(model_path) and not os.path.exists(model_path + ".zip"):

@@ -17,7 +17,7 @@ def main(args=None):
     env = gym.make('ThreatAgent-v0')
     
     # 2. Kayıt Klasörlerini Ayarla
-    models_dir = "models/PPO"
+    models_dir = "models/PPO-1"
     log_dir = "logs"
     
     if not os.path.exists(models_dir):
@@ -44,7 +44,7 @@ def main(args=None):
     # 4. Eğitimi Başlat
     # TIMESTEPS: Her kayıt öncesi kaç adım atılacağı
     TIMESTEPS = 2048 
-    for i in range(1, 11):
+    for i in range(1, 5):
         # Modeli eğit
         model.learn(total_timesteps=TIMESTEPS, reset_num_timesteps=False, tb_log_name="PPO")
         
