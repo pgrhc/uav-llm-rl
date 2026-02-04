@@ -188,7 +188,11 @@ class ThreatAgentEnv(gym.Env):
 
     def calculate_reward_and_info(self, action, obs):
         """
-        V4 FINAL: Stabilize edilmiş ödül ve JSON Info üretimi.
+        V6 STABILITY & DEBUG (Ödül Patlamasını Önleme + L1 Sparsity):
+        - Reward Capping: Negatif ödül havuzunu sınırladık (Max ceza 1.0).
+        - Sparsity Penalty: 'Her şeye 1 bas' ezberini bozmak için L1 vergisi.
+        - Debugging: 'target_risk' artık Info çıktısında görünüyor.
+        - Double Punishment Fix: False Alarm yumuşatıldı.
         """
         total_reward = 0.0
         vector = obs["state_vector"]
@@ -199,10 +203,14 @@ class ThreatAgentEnv(gym.Env):
         
         class_map = {0: "Unknown", 1: "Drone", 2: "Bird", 3: "FixedWing", 4: "Person"}
         
+        # Sparsity için aksiyon toplamını tutalım
+        action_sum = 0.0
+        
         for i in range(self.K):
             start_idx = i * 17
             obj_data = objects_flat[start_idx : start_idx + 17]
             
+            # [0]=ID, [1]=Class, [2]=Azimuth, [4]=Range, [5]=Speed, [16]=IsValid
             obj_id = int(obj_data[0])
             class_id = int(obj_data[1])
             azimuth = obj_data[2] 
@@ -216,8 +224,22 @@ class ThreatAgentEnv(gym.Env):
             
             if is_valid > 0.5:
                 valid_obj_count += 1
+                action_sum += current_score
                 
-                # --- INFO / JSON HAZIRLIĞI ---
+                # --- 1. TARGET RISK HESABI ---
+                # Keskin Sigmoid (Orta bölgeyi daralt)
+                # dist=3.0 -> risk=0.5
+                dist_factor = 1.0 / (1.0 + np.exp(2.0 * (dist - 3.0)))
+                
+                # Hız Katkısı (Max 0.4 ile sınırlı)
+                clamped_speed = np.clip(closing_speed, -2.0, 10.0)
+                speed_contribution = 0.0
+                if clamped_speed > 0.1:
+                    speed_contribution = np.clip(0.15 * clamped_speed, 0.0, 0.4)
+                
+                target_risk = np.clip(dist_factor + speed_contribution, 0.0, 1.0)
+                
+                # --- INFO HAZIRLIĞI (DEBUG İÇİN TARGET_RISK EKLENDİ) ---
                 deg = math.degrees(azimuth)
                 while deg > 180: deg -= 360
                 while deg < -180: deg += 360
@@ -234,6 +256,7 @@ class ThreatAgentEnv(gym.Env):
                 threat_info = {
                     "id": obj_id,
                     "score": round(current_score, 3),
+                    "target_risk": round(float(target_risk), 3), # <--- KRİTİK EKLEME
                     "rel_dist": round(float(dist), 2),
                     "rel_vel": round(float(closing_speed), 2),
                     "source": source,
@@ -242,48 +265,68 @@ class ThreatAgentEnv(gym.Env):
                 }
                 detailed_threats.append(threat_info)
                 
-                # --- RISK HESAPLAMA ---
-                dist_factor = 1.0 / (1.0 + np.exp(1.2 * (dist - 3.5)))
+                # --- 2. ASİMETRİK ÖDÜL (CAPPED / SINIRLI) ---
+                diff = current_score - target_risk
                 
-                clamped_speed = np.clip(closing_speed, -2.0, 10.0)
-                speed_contribution = 0.0
-                if clamped_speed > 0.1:
-                    speed_contribution = np.clip(0.15 * clamped_speed, 0.0, 0.4)
+                if diff > 0:
+                    # OVER-SCORE: Gereksiz Panik (Cezası 2.0 kat)
+                    penalty = diff * 2.0 
+                else:
+                    # UNDER-SCORE: Risk Kaçırma (Cezası 1.0 kat)
+                    penalty = abs(diff) * 1.0
                 
-                target_risk = np.clip(dist_factor + speed_contribution, 0.0, 1.0)
+                # CEZAYI LİMİTLE (Reward Explosion Önleyici)
+                # Ceza en fazla 1.0 olabilir. Böylece alignment_reward en kötü 0.0 olur.
+                # Eksiye düşmek yok (Alignment kısmında).
+                penalty = min(penalty, 1.0)
                 
-                # --- REWARD ---
-                alignment_reward = 1.0 - abs(current_score - target_risk)
+                alignment_reward = 1.0 - penalty
                 total_reward += alignment_reward
                 
+                # --- 3. SMOOTHNESS (MİNİMAL) ---
                 delta_risk = abs(target_risk - prev_risk)
                 delta_score = abs(current_score - prev_score)
                 
-                if delta_score > (delta_risk + 0.1):
-                    penalty = delta_score - delta_risk
-                    clipped_penalty = np.clip(penalty, 0.0, 1.0) 
-                    total_reward -= 0.15 * clipped_penalty
+                if delta_score > (delta_risk + 0.15): 
+                    smooth_penalty = delta_score - delta_risk
+                    # Smoothness cezasını da limitliyoruz (Max 0.2 düşsün)
+                    total_reward -= min(0.1 * smooth_penalty, 0.2)
                 
-                if target_risk < 0.1 and current_score > 0.4:
-                    total_reward -= 0.3 * current_score 
+                # --- 4. FALSE ALARM (YUMUŞATILDI) ---
+                # Zaten asimetrik ceza var, burası sadece "uçurum" durumu için.
+                # Target çok düşükken skor çok yüksekse hafif dokun.
+                if target_risk < 0.05 and current_score > 0.6:
+                    total_reward -= 0.1 * current_score # Çok hafifletildi
 
                 self.prev_target_risk[i] = target_risk
                 
             else:
-                total_reward -= current_score * 0.5
+                # Valid olmayan slota puan verirse cezası net olsun ama patlatmasın
+                # Skor 1.0 verirse -0.5 ceza yesin.
+                total_reward -= current_score * 0.5 
                 self.prev_target_risk[i] = 0.0
 
+        # --- 5. L1 SPARSITY (GENEL BÜTÇE KISITI) ---
+        # "Slot 0 Fix" için en iyi ilaç budur.
+        # Toplam skor ne kadar yüksekse o kadar "vergi" öder.
+        # Eğer gerçekten tehdit varsa (alignment reward yüksekse) bu vergiyi öder.
+        # Ama tehdit yoksa boşuna vergi ödememek için skoru kısar.
         if valid_obj_count > 0:
+            avg_action = action_sum / valid_obj_count
+            # Vergi oranı: %5. Skor ortalaması 1.0 ise 0.05 ceza yer.
+            # Bu, ajanı "gerekmedikçe 0 basmaya" teşvik eder.
+            total_reward -= 0.05 * avg_action
+
+            # Ortalamayı al
             total_reward = total_reward / valid_obj_count
 
-        # Bu 'info_data' Inference node'una gidecek
         info_data = {
             "top_threats": detailed_threats,
             "valid_count": valid_obj_count
         }
             
         return total_reward, info_data
-
+    
     def close(self):
         self._running = False
         time.sleep(0.2)

@@ -11,11 +11,11 @@ def main(args=None):
     print("--- PRETRAINED MODEL İLE EĞİTİM BAŞLIYOR ---")
 
     # 1. YENİ Ortamı Oluştur (V4 kodlu V2 Environment)
-    env = gym.make('ThreatAgent-v4')
+    env = gym.make('ThreatAgent-v6')
     
     # 2. Kayıt Klasörleri
     # Yeni bir klasör açalım ki eskilerle karışmasın (İsteğe bağlı)
-    models_dir = "models/PPO-FineTuned-1"
+    models_dir = "models/PPO-FineTuned-3"
     log_dir = "logs"
     
     if not os.path.exists(models_dir):
@@ -34,11 +34,11 @@ def main(args=None):
 
     print(f"Model Yükleniyor: {pretrained_path}...")
     custom_params = {
-        'learning_rate': 0.00005,  # Çok yavaş öğren (Unutmayı engeller)
-        'n_epochs': 5,             # Veriyi az tekrar et (Ezberlemeyi/KL artışını engeller)
+        'learning_rate': 0.0001,  # Çok yavaş öğren (Unutmayı engeller)
+        'n_epochs': 10,             # Veriyi az tekrar et (Ezberlemeyi/KL artışını engeller)
         'clip_range': 0.15,         # Değişime sıkı sınır koy (Stabilite sağlar)
         'batch_size': 128,         # Daha büyük paketlerle çalış (Gürültüyü azaltır)
-        'ent_coef': 0.001           # Çok az meraklı ol (Takılmayı engeller)
+        'ent_coef': 0.01           # Çok az meraklı ol (Takılmayı engeller)
     }
 
     # 4. MODELİ YÜKLE (LOAD)
@@ -60,17 +60,22 @@ def main(args=None):
     # Ama Learning Rate'i değiştirmek serbesttir ve metriklerini düzeltecek olan odur.
 
     # Eğer manuel olarak LR değişmezse, kod içinde zorlayalım:
-    model.learning_rate = 0.00005
-    model.n_epochs = 5
+    model.learning_rate = 0.0001
+    model.n_epochs = 10
     model.clip_range = lambda x: 0.15 # Sabit değer için lambda gerekebilir
     model.batch_size = 128
-    model.ent_coef = 0.001
-    print(f"Yeni Learning Rate ayarlandı: {model.learning_rate}")
+    model.ent_coef = 0.01
+    print("LR:", model.learning_rate)
+    print("n_epochs:", model.n_epochs)
+    print("ent_coef:", model.ent_coef)
+    print("batch_size:", model.batch_size)
+    print("n_steps:", model.n_steps)
+    print("clip_range test:", model.clip_range(1.0) if callable(model.clip_range) else model.clip_range)
 
     # 5. EĞİTİMİ DEVAM ETTİR
     TIMESTEPS = 2048 
     # range'i artırabilirsin, artık temel bilgi var, sadece ince ayar yapıyoruz.
-    for i in range(1, 20): 
+    for i in range(1, 11): 
         model.learn(
             total_timesteps=TIMESTEPS, 
             reset_num_timesteps=False, # FALSE YAP! (Loglar kaldığı yerden devam etsin)
