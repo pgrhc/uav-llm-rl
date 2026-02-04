@@ -16,6 +16,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/FusionStamped.msg"
   "msg/RadarPoint.msg"
   "msg/RadarPoints.msg"
+  "srv/StrategicAdvice.srv"
   DEPENDENCIES builtin_interfaces sensor_msgs nav_msgs std_msgs
 )
 

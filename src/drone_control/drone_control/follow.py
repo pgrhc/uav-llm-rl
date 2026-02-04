@@ -13,8 +13,6 @@ from px4_msgs.msg import VehicleCommand
 # ROS Standart Mesajları
 from nav_msgs.msg import Path
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import PoseStamped
-
 
 class OffboardControl(Node):
 
@@ -55,23 +53,15 @@ class OffboardControl(Node):
             Odometry,
             '/odometry/filtered', 
             self.odom_callback,
-            qos_standard
+            qos_standard # <-- Değişti
         )
         
-        # Path dinle (Nav2 fallback)
+        # Path dinle (Nav2 topic ismi genelde /plan olabilir, /path ise burası doğru)
         self.path_sub = self.create_subscription(
             Path,
             '/plan', 
             self.path_callback,
-            qos_standard
-        )
-
-        # Route Planner waypoint dinle (öncelikli)
-        self.route_waypoint_sub = self.create_subscription(
-            PoseStamped,
-            '/route/waypoint_safe',
-            self.route_waypoint_callback,
-            10
+            qos_standard # <-- Değişti
         )
 
         # Değişkenler
@@ -80,18 +70,13 @@ class OffboardControl(Node):
         self.current_wp_index = 0
         self.current_pos_enu = [0.0, 0.0, 0.0] 
         self.mission_altitude = -5.0 
-        self.acceptance_radius = 2.5
-        
-        # Route planner waypoint (öncelikli)
-        self.route_waypoint = None
-        self.route_waypoint_timeout = 1.0  # seconds
-        self.route_waypoint_time = None
+        self.acceptance_radius = 0.5
         
         # Debug için sayaç
         self.log_counter = 0
 
         self.timer = self.create_timer(0.1, self.timer_callback)
-        self.get_logger().info("Offboard Node Başlatıldı. Path/Route waypoint bekleniyor...")
+        self.get_logger().info("Offboard Node Başlatıldı. Path bekleniyor...")
 
     def odom_callback(self, msg):
         self.current_pos_enu = [
@@ -104,19 +89,6 @@ class OffboardControl(Node):
         self.current_path = msg.poses
         self.current_wp_index = 0
         self.get_logger().info(f"!!! YENİ ROTA ALINDI !!! Uzunluk: {len(self.current_path)} nokta.")
-
-    def route_waypoint_callback(self, msg: PoseStamped):
-        """Route Planner'dan gelen güvenli waypoint (öncelikli)."""
-        self.route_waypoint = msg
-        self.route_waypoint_time = self.get_clock().now()
-
-    def is_route_waypoint_valid(self) -> bool:
-        """Route waypoint hala geçerli mi kontrol et (timeout)."""
-        if self.route_waypoint is None or self.route_waypoint_time is None:
-            return False
-        
-        elapsed = (self.get_clock().now() - self.route_waypoint_time).nanoseconds / 1e9
-        return elapsed < self.route_waypoint_timeout
 
     def timer_callback(self):
         # 1 saniyede bir log bas (10 * 0.1s)
@@ -146,21 +118,15 @@ class OffboardControl(Node):
             px4_east  = target_pose_enu.x
             px4_down  = self.mission_altitude
 
-            curr_north = self.current_pos_enu[1]
-            curr_east  = self.current_pos_enu[0]
-
-            # Fark Hesapları
-            delta_north = px4_north - curr_north
-            delta_east  = px4_east - curr_east
-            dist_2d = math.sqrt(delta_north**2 + delta_east**2)
+            # Mesafe Kontrolü
+            dx = target_pose_enu.x - self.current_pos_enu[0]
+            dy = target_pose_enu.y - self.current_pos_enu[1]
+            dist_2d = math.sqrt(dx*dx + dy*dy)
 
             msg.position = [px4_north, px4_east, px4_down]
             
             # Yaw Hesabı (Basit: Hep 0/Kuzey baksın, hataları önlemek için)
-            if dist_2d > 0.1:
-                msg.yaw = math.atan2(delta_east, delta_north)
-            else:
-                msg.yaw = float('nan') 
+            msg.yaw = 0.0 
 
             # Loglama (Hata ayıklama için çok önemli)
             if self.log_counter % 20 == 0: # 2 saniyede bir yaz

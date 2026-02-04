@@ -13,11 +13,11 @@ def main(args=None):
     print("--- EĞİTİM BAŞLATILIYOR ---")
 
     # 1. Ortamı Oluştur
-    # id='ThreatAgent-v0' -> __init__.py dosyasında register ettiğimiz isim
-    env = gym.make('ThreatAgent-v0')
+    # id='ThreatAgent-v3' -> __init__.py dosyasında register ettiğimiz isim
+    env = gym.make('ThreatAgent-v3')
     
     # 2. Kayıt Klasörlerini Ayarla
-    models_dir = "models/PPO-1"
+    models_dir = "models/PPO-2"
     log_dir = "logs"
     
     if not os.path.exists(models_dir):
@@ -44,7 +44,7 @@ def main(args=None):
     # 4. Eğitimi Başlat
     # TIMESTEPS: Her kayıt öncesi kaç adım atılacağı
     TIMESTEPS = 2048 
-    for i in range(1, 5):
+    for i in range(1, 10):
         # Modeli eğit
         model.learn(total_timesteps=TIMESTEPS, reset_num_timesteps=False, tb_log_name="PPO")
         

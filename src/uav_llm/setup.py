@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'uav_threat_agent'
+package_name = 'uav_llm'
 
 setup(
     name=package_name,
@@ -24,9 +24,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'train = uav_threat_agent.nodes.train_debug_node:main',
-            'inference = uav_threat_agent.nodes.threat_agent_node:main',
-            'pretrained_train = uav_threat_agent.nodes.pretrained_model_node:main',
+            "llm_strategic_node = uav_llm.llm_strategic_node:main",
+            "state_summarizer_node = uav_llm.state_summarizer_node:main",
         ],
     },
 )

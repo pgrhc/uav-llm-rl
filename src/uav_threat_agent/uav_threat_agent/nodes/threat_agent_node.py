@@ -3,71 +3,77 @@ import uav_threat_agent
 from stable_baselines3 import PPO
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, String
 import numpy as np
 import os
+import json
 
 class ThreatPublisher(Node):
     def __init__(self):
         super().__init__('threat_agent_publisher')
-        # Tehdit skorlarını yayınlayacağımız topic
-        self.publisher_ = self.create_publisher(Float32MultiArray, '/threat/output_scores', 10)
+        # 1. Ham Skorlar (0.0 - 1.0 arası)
+        self.score_pub = self.create_publisher(Float32MultiArray, '/threat/output_scores', 10)
+        # 2. Detaylı JSON Bilgisi (ID, Sınıf, Hız vb.)
+        self.info_pub = self.create_publisher(String, '/threat/detailed_info', 10)
 
 def main(args=None):
     if not rclpy.ok():
         rclpy.init(args=args)
 
-    print("--- AJAN YÜKLENİYOR... ---")
+    print("--- GELİŞMİŞ AJAN (V2) YÜKLENİYOR... ---")
 
-    # 1. Ortamı Oluştur
-    # Inference modunda 'render_mode' gerekebilir ama şimdilik düz yapalım
-    env = gym.make('ThreatAgent-v0')
+    # 1. Ortamı Oluştur (V2 olmasına dikkat!)
+    env = gym.make('ThreatAgent-v4')
     obs, _ = env.reset()
 
-    # 2. EĞİTİLMİŞ MODELİ YÜKLE
-    # BURAYA DİKKAT: Ekran görüntüsündeki modelin tam yolunu yaz.
-    # Eğer dosya .zip ise uzantıyı ekle, klasör ise sonuna / koyma.
-    model_path = "/home/ubuntu/Desktop/ros2_env/models/PPO/8192.zip" 
+    # 2. MODELİ YÜKLE
+    # Yeni eğiteceğin model buraya düşecek (isim değişebilir, kontrol et)
+    # Örn: models/PPO-1/10240.zip gibi
+    model_path = "/home/ubuntu/Desktop/ros2_env/models/PPO-FineTuned-1/26624_finetuned.zip" 
     
-    # Model dosyasının varlığını kontrol et
     if not os.path.exists(model_path) and not os.path.exists(model_path + ".zip"):
         print(f"HATA: Model dosyası bulunamadı: {model_path}")
+        # Test için models/PPO klasöründeki eski bir modeli de deneyebilirsin
         return
 
     try:
-        # Modeli yükle
         model = PPO.load(model_path, env=env)
-        print(f"--- MODEL BAŞARIYLA YÜKLENDİ: {model_path} ---")
-        print("--- CANLI TEHDİT ANALİZİ BAŞLADI ---")
+        print(f"--- MODEL BAŞARIYLA YÜKLENDİ ---")
     except Exception as e:
-        print(f"Model yüklenirken hata oluştu: {e}")
+        print(f"Model yükleme hatası: {e}")
         return
 
-    # Yardımcı publisher node
     threat_pub = ThreatPublisher()
     
     try:
         while rclpy.ok():
-            # A) Modelden Tahmin Al (Deterministic=True -> En iyi bildiğini okur, macera aramaz)
+            # A) Modelden Tahmin Al
             action, _state = model.predict(obs, deterministic=True)
 
-            # B) Skoru Yayınla
-            # action: [0.9, 0.1, 0.0, ...] gibi 5 tane sayı
+            # B) Skorları Yayınla
             msg = Float32MultiArray()
             msg.data = action.tolist() 
-            threat_pub.publisher_.publish(msg)
-            
-            # Konsola da basalım ki çalıştığını gör (Opsiyonel)
-            # print(f"Threat Scores: {np.round(action, 2)}")
+            threat_pub.score_pub.publish(msg)
 
-            # C) Ortamda bir adım ilerle (ROS verilerini güncellemek için şart)
+            # C) Adım At ve INFO Verisini Al
             obs, reward, terminated, truncated, info = env.step(action)
+
+            # --- YENİ: JSON DETAYLARINI YAYINLA ---
+            # Environment kodunda 'top_threats' anahtarı ile göndermiştik
+            if "top_threats" in info:
+                threat_data = info["top_threats"]
+                
+                # 1. Konsola yazdır (Okunabilir formatta)
+                # print("\n--- GÜNCEL TEHDİT ANALİZİ ---")
+                # print(json.dumps(threat_data, indent=2))
+                
+                # 2. ROS Topic'e JSON string olarak bas (Diğer nodelar okusun diye)
+                json_msg = String()
+                json_msg.data = json.dumps(threat_data)
+                threat_pub.info_pub.publish(json_msg)
 
             if terminated or truncated:
                 obs, _ = env.reset()
-
-            # CPU'yu rahatlatmak için minik uyku
-            # time.sleep(0.01) 
 
     except KeyboardInterrupt:
         pass

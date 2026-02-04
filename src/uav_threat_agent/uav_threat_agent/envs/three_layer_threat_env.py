@@ -9,29 +9,34 @@ from cv_bridge import CvBridge
 import threading
 import time
 import cv2
+import math
 
 class ThreatAgentEnv(gym.Env):
     """
-    Multimodal Girişli Tehdit Sınıflandırma Ortamı.
-    GÜNCELLEME: Mesafe Tabanlı Soft Risk + Kararlılık (Smoothness) Ödülü.
+    Advanced Threat Agent Environment (V4 Final).
+    Features:
+    - Distance-based Object Sorting (Slot Stability)
+    - Full Sensor Synchronization
+    - Stabilized Reward Function (Sigmoid Risk + Adaptive Smoothness)
+    - Detailed JSON Output Generation
     """
     
     def __init__(self):
         super(ThreatAgentEnv, self).__init__()
         
-        # --- 1. ACTION SPACE ---
+        # --- 1. ACTION SPACE (DEĞİŞTİRME! Ajan sadece sayı üretir) ---
         self.K = 5
         self.action_space = spaces.Box(low=0.0, high=1.0, shape=(self.K,), dtype=np.float32)
 
         # --- 2. OBSERVATION SPACE ---
         self.observation_space = spaces.Dict({
-            # (3, 64, 64) -> 3 Kanal: Lidar, Radar, YOLO
             "bev_image": spaces.Box(low=0.0, high=1.0, shape=(3, 64, 64), dtype=np.float32),
             "state_vector": spaces.Box(low=-np.inf, high=np.inf, shape=(88,), dtype=np.float32)
         })
 
-        # --- YENİ: Önceki aksiyonu saklamak için hafıza (Smoothness için) ---
+        # --- HAFIZA ---
         self.prev_action = np.zeros(self.K, dtype=np.float32)
+        self.prev_target_risk = np.zeros(self.K, dtype=np.float32) 
 
         # --- 3. ROS 2 BAĞLANTILARI ---
         if not rclpy.ok():
@@ -41,15 +46,18 @@ class ThreatAgentEnv(gym.Env):
         self._running = True
         self.br = CvBridge()
         
-        # Veri Saklama Alanları
+        # Veri Saklama
         self.bev_stack = np.zeros((3, 64, 64), dtype=np.float32)
         self.latest_vector = np.zeros((88,), dtype=np.float32)
         
+        # Flagler
         self.new_vec = False
         self.new_lidar = False 
+        self.new_radar = False
+        self.new_yolo = False
         self.cond = threading.Condition()
 
-        # --- ABONELİKLER ---
+        # Abonelikler
         self.sub_vec = self.node.create_subscription(
             Float32MultiArray, '/threat/state_vec', self.vec_callback, 10)
         
@@ -69,13 +77,33 @@ class ThreatAgentEnv(gym.Env):
         while self._running and rclpy.ok():
             rclpy.spin_once(self.node, timeout_sec=0.1)
 
-    # --- CALLBACKS (Değişmedi) ---
+    # --- YARDIMCI: SIRALAMA (SLOT STABILITY) ---
+    def _sort_objects(self, vector):
+        """Objeleri mesafeye göre sıralar. Slot 0 = En Yakın."""
+        try:
+            uav_data = vector[:3] 
+            objects_flat = vector[3:]
+            num_objs = 5
+            feat_len = 17
+            
+            objs_matrix = objects_flat.reshape(num_objs, feat_len)
+            
+            # Mesafeye (Index 4) göre sırala
+            sorted_indices = np.argsort(objs_matrix[:, 4])
+            sorted_objs = objs_matrix[sorted_indices]
+            
+            return np.concatenate((uav_data, sorted_objs.flatten()))
+        except Exception:
+            return vector
+
+    # --- CALLBACKS ---
     def vec_callback(self, msg):
         try:
             data = np.array(msg.data, dtype=np.float32)
             if data.shape[0] == 88:
+                sorted_data = self._sort_objects(data)
                 with self.cond:
-                    self.latest_vector = data
+                    self.latest_vector = sorted_data
                     self.new_vec = True
                     self.cond.notify_all()
         except Exception:
@@ -100,21 +128,27 @@ class ThreatAgentEnv(gym.Env):
         img = self._process_image(msg)
         with self.cond:
             self.bev_stack[1] = img 
+            self.new_radar = True
+            self.cond.notify_all()
 
     def yolo_callback(self, msg):
         img = self._process_image(msg)
         with self.cond:
             self.bev_stack[2] = img 
+            self.new_yolo = True
+            self.cond.notify_all()
 
     # --- GYM FUNCTIONS ---
-
-    def _wait_for_obs(self, timeout=1.0):
+    def _wait_for_obs(self, timeout=0.5):
         end = time.time() + timeout
         with self.cond:
             while time.time() < end:
-                if self.new_vec and self.new_lidar:
+                all_fresh = self.new_vec and self.new_lidar and self.new_radar and self.new_yolo
+                if all_fresh:
                     self.new_vec = False
                     self.new_lidar = False
+                    self.new_radar = False
+                    self.new_yolo = False
                     return True
                 remaining = end - time.time()
                 if remaining > 0:
@@ -123,9 +157,8 @@ class ThreatAgentEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        
-        # YENİ: Bölüm başında hafızayı sıfırla
         self.prev_action = np.zeros(self.K, dtype=np.float32)
+        self.prev_target_risk = np.zeros(self.K, dtype=np.float32)
         
         self._wait_for_obs(timeout=1.0)
         observation = {
@@ -142,86 +175,114 @@ class ThreatAgentEnv(gym.Env):
             "state_vector": self.latest_vector.copy()
         }
         
-        # Ödül Hesapla
-        reward = self.calculate_reward(action, obs)
+        # 1. Ödül Hesapla ve JSON Bilgisini (Info) Üret
+        reward, info_data = self.calculate_reward_and_info(action, obs)
         
-        # YENİ: Bir sonraki adım için şu anki aksiyonu kaydet
+        # 2. Hafızayı Güncelle
         self.prev_action = action.copy()
         
         terminated = False 
         truncated = False 
         
-        return obs, reward, terminated, truncated, {}
+        return obs, reward, terminated, truncated, info_data
 
-    def calculate_reward(self, action, obs):
+    def calculate_reward_and_info(self, action, obs):
         """
-        GÜNCELLENMİŞ ÖDÜL FONKSİYONU (Path Following Aşaması İçin)
-        
-        1. Soft Risk: Mesafe tabanlı [0, 1] arası hedef risk.
-        2. Alignment: |Ajan Skoru - Hedef Risk| farkı azaldıkça ödül.
-        3. Smoothness: Skorlar aniden zıplarsa ceza.
+        V4 FINAL: Stabilize edilmiş ödül ve JSON Info üretimi.
         """
         total_reward = 0.0
-        
         vector = obs["state_vector"]
         objects_flat = vector[3:] 
         
-        # Parametreler
-        D_CRIT = 1.5  # Bu mesafenin altı %100 risk
-        D_SAFE = 4.0  # Bu mesafenin üstü %0 risk
-        
         valid_obj_count = 0
+        detailed_threats = [] 
+        
+        class_map = {0: "Unknown", 1: "Drone", 2: "Bird", 3: "FixedWing", 4: "Person"}
         
         for i in range(self.K):
             start_idx = i * 17
             obj_data = objects_flat[start_idx : start_idx + 17]
             
-            # Vektör: [4]=Range, [16]=IsValid
+            obj_id = int(obj_data[0])
+            class_id = int(obj_data[1])
+            azimuth = obj_data[2] 
             dist = obj_data[4]
+            closing_speed = obj_data[5]
             is_valid = obj_data[16]
             
-            current_score = action[i]
-            prev_score = self.prev_action[i] # Önceki adımdaki skor
+            current_score = float(action[i])
+            prev_score = self.prev_action[i]
+            prev_risk = self.prev_target_risk[i] 
             
             if is_valid > 0.5:
                 valid_obj_count += 1
                 
-                # --- A. HEDEF RİSKİ HESAPLA (Ground Truth) ---
-                # TTC yerine daha stabil olan "Mesafe" kullanıyoruz.
-                # Linear Interpolation: 1.5m -> 1.0 Risk, 4.0m -> 0.0 Risk
+                # --- INFO / JSON HAZIRLIĞI ---
+                deg = math.degrees(azimuth)
+                while deg > 180: deg -= 360
+                while deg < -180: deg += 360
                 
-                if dist <= D_CRIT:
-                    target_risk = 1.0
-                elif dist >= D_SAFE:
-                    target_risk = 0.0
-                else:
-                    # Aradaki değerler için orantı kur
-                    # Örn: 2.75m ise risk 0.5 olur.
-                    ratio = (D_SAFE - dist) / (D_SAFE - D_CRIT)
-                    target_risk = np.clip(ratio, 0.0, 1.0)
+                sector = "rear"
+                if -45 <= deg <= 45: sector = "front"
+                elif 45 < deg <= 135: sector = "left"
+                elif -135 <= deg < -45: sector = "right"
+
+                source = "lidar"
+                if class_id > 0: source = "yolo_fused"
+                elif dist > 15.0: source = "radar"
+
+                threat_info = {
+                    "id": obj_id,
+                    "score": round(current_score, 3),
+                    "rel_dist": round(float(dist), 2),
+                    "rel_vel": round(float(closing_speed), 2),
+                    "source": source,
+                    "sector": sector,
+                    "class": class_map.get(class_id, "Unknown")
+                }
+                detailed_threats.append(threat_info)
                 
-                # --- B. HİZALAMA ÖDÜLÜ (Alignment Reward) ---
-                # Ajanın tahmini hedef riske ne kadar yakın?
-                # Tam isabetse +1.0, çok uzaksa 0.0'a yaklaşır.
+                # --- RISK HESAPLAMA ---
+                dist_factor = 1.0 / (1.0 + np.exp(1.2 * (dist - 3.5)))
+                
+                clamped_speed = np.clip(closing_speed, -2.0, 10.0)
+                speed_contribution = 0.0
+                if clamped_speed > 0.1:
+                    speed_contribution = np.clip(0.15 * clamped_speed, 0.0, 0.4)
+                
+                target_risk = np.clip(dist_factor + speed_contribution, 0.0, 1.0)
+                
+                # --- REWARD ---
                 alignment_reward = 1.0 - abs(current_score - target_risk)
                 total_reward += alignment_reward
                 
-                # --- C. KARARLILIK CEZASI (Smoothness Penalty) ---
-                # Skor bir anda 0.1'den 0.9'a fırlamasın (Gürültüden kaçınma)
-                jump = abs(current_score - prev_score)
-                total_reward -= 0.1 * jump  # Ufak bir ceza
+                delta_risk = abs(target_risk - prev_risk)
+                delta_score = abs(current_score - prev_score)
+                
+                if delta_score > (delta_risk + 0.1):
+                    penalty = delta_score - delta_risk
+                    clipped_penalty = np.clip(penalty, 0.0, 1.0) 
+                    total_reward -= 0.15 * clipped_penalty
+                
+                if target_risk < 0.1 and current_score > 0.4:
+                    total_reward -= 0.3 * current_score 
 
+                self.prev_target_risk[i] = target_risk
+                
             else:
-                # --- D. PADDING CEZASI ---
-                # Boş slotlara skor verme
-                total_reward -= current_score * 0.5 
+                total_reward -= current_score * 0.5
+                self.prev_target_risk[i] = 0.0
 
-        # --- E. NORMALİZASYON ---
-        # Toplam ödülü valid obje sayısına böl ki 1 obje ile 5 obje arasında uçurum olmasın.
         if valid_obj_count > 0:
             total_reward = total_reward / valid_obj_count
+
+        # Bu 'info_data' Inference node'una gidecek
+        info_data = {
+            "top_threats": detailed_threats,
+            "valid_count": valid_obj_count
+        }
             
-        return total_reward
+        return total_reward, info_data
 
     def close(self):
         self._running = False

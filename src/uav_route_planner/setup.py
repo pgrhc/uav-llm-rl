@@ -1,0 +1,33 @@
+from setuptools import find_packages, setup
+
+package_name = 'uav_route_planner'
+
+setup(
+    name=package_name,
+    version='0.0.1',
+    packages=find_packages(exclude=['test']),
+    data_files=[
+        ('share/ament_index/resource_index/packages',
+            ['resource/' + package_name]),
+        ('share/' + package_name, ['package.xml']),
+    ],
+    install_requires=['setuptools'],
+    zip_safe=True,
+    maintainer='ubuntu',
+    maintainer_email='samwnchstrgl@gmail.com',
+    description='RL-based route planning agent with CBF safety filter for UAV navigation',
+    license='MIT',
+    extras_require={
+        'test': ['pytest'],
+    },
+    entry_points={
+        'console_scripts': [
+            # Faz 0: Altyapı node'ları
+            'costmap_patch_node = uav_route_planner.costmap_patch_node:main',
+            'heuristic_planner_node = uav_route_planner.heuristic_planner_node:main',
+            'route_safety_filter_node = uav_route_planner.route_safety_filter_node:main',
+            # Faz 1: RL ajanı (sonra eklenecek)
+            # 'route_planner_agent_node = uav_route_planner.route_planner_agent_node:main',
+        ],
+    },
+)

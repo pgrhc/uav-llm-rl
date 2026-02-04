@@ -1,0 +1,12 @@
+
+# REQUEST (Girdiler)
+string system_summary_json   # Hız, konum, tehditler (JSON formatında)
+string mission_goal          # "Hedefe güvenli git" vb.
+string constraints           # "Maksimum hız 2.0, uçuşa yasak bölge var"
+
+---
+# RESPONSE (Çıktılar)
+string advice_json           # Mod değişimi, param güncellemeleri (JSON formatında)
+string explanation_text      # İnsan için açıklama (UI için)
+bool success                 # LLM mantıklı cevap verdi mi?
+
