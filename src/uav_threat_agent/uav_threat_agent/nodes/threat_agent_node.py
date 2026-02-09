@@ -23,13 +23,13 @@ def main(args=None):
     print("--- GELİŞMİŞ AJAN (V2) YÜKLENİYOR... ---")
 
     # 1. Ortamı Oluştur (V2 olmasına dikkat!)
-    env = gym.make('ThreatAgent-v5')
+    env = gym.make('ThreatAgent-v6')
     obs, _ = env.reset()
 
     # 2. MODELİ YÜKLE
     # Yeni eğiteceğin model buraya düşecek (isim değişebilir, kontrol et)
     # Örn: models/PPO-1/10240.zip gibi
-    model_path = "/home/ubuntu/Desktop/ros2_env/models/PPO-FineTuned-2/10240_finetuned.zip" 
+    model_path = "/home/ubuntu/Desktop/ros2_env/models/PPO-FineTuned-3/18432_finetuned.zip" 
     
     if not os.path.exists(model_path) and not os.path.exists(model_path + ".zip"):
         print(f"HATA: Model dosyası bulunamadı: {model_path}")

@@ -10,6 +10,8 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/uav_llm/launch',
+        ['launch/uav_llm_rl.launch.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -24,7 +26,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            "llm_strategic_node = uav_llm.llm_strategic_node:main",
+            "llm_node = uav_llm.llm_strategic_node:main",
             "state_summarizer_node = uav_llm.state_summarizer_node:main",
         ],
     },

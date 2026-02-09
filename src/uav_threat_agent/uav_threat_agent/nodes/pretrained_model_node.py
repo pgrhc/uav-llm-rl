@@ -25,7 +25,7 @@ def main(args=None):
 
     # 3. ESKİ MODELİN YOLUNU BELİRT
     # En son kaydettiğin en iyi modelin tam yolunu buraya yaz.
-    pretrained_path = "/home/ubuntu/Desktop/ros2_env/models/PPO-2/18432.zip"
+    pretrained_path = "/home/ubuntu/Desktop/ros2_env/models/PPO-FineTuned-2/10240_finetuned.zip"
 
     # Dosya var mı kontrol et
     if not os.path.exists(pretrained_path):
