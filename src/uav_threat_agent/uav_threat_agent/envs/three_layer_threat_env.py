@@ -130,6 +130,7 @@ class ThreatAgentEnv(gym.Env):
         try:
             data = np.array(msg.data, dtype=np.float32)
             if data.shape[0] == 88:
+                data = self._filter_stale_objects(data)
                 sorted_data = self._sort_objects(data)
                 with self.cond:
                     self.latest_vector = sorted_data
@@ -137,6 +138,26 @@ class ThreatAgentEnv(gym.Env):
                     self.cond.notify_all()
         except Exception:
             pass
+
+    def _filter_stale_objects(self, vector):
+        """
+        Stale/phantom objeleri temizle.
+        Kural: dist > 15m VE speed ≈ 0 → muhtemelen hayalet, is_valid=0 yap.
+        """
+        objects_flat = vector[3:].reshape(5, 17).copy()
+        
+        for i in range(5):
+            dist         = objects_flat[i][4]
+            closing_speed = abs(objects_flat[i][5])
+            is_valid     = objects_flat[i][16]
+            
+            if is_valid > 0.5:
+                # Çok uzak VE hareket etmiyorsa → stale data
+                if dist > 15.0 and closing_speed < 0.2:
+                    objects_flat[i][16] = 0.0  # is_valid = False yap
+                    
+        vector[3:] = objects_flat.flatten()
+        return vector
 
     def _process_image(self, msg):
         try:
@@ -182,6 +203,11 @@ class ThreatAgentEnv(gym.Env):
                 remaining = end - time.time()
                 if remaining > 0:
                     self.cond.wait(timeout=remaining)
+        self.node.get_logger().warn(
+            "Sensor timeout! Stale data kullanılıyor. "
+            f"(vec={self.new_vec}, lidar={self.new_lidar}, "
+            f"radar={self.new_radar}, yolo={self.new_yolo})"
+        )
         return False
 
     def reset(self, seed=None, options=None):
@@ -234,7 +260,7 @@ class ThreatAgentEnv(gym.Env):
         detailed_threats = [] 
         
         # Sınıf Risk Haritası
-        class_risk_map = {0: 0.7, 1: 1.0, 2: 0.25, 3: 1.0, 4: 0.3}
+        # class_risk_map = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.6}
         class_names = {0: "Unknown", 1: "Drone", 2: "Bird", 3: "FixedWing", 4: "Person"}
         
         action_sum = 0.0
@@ -255,7 +281,26 @@ class ThreatAgentEnv(gym.Env):
             dist = obj_data[4]
             closing_speed = obj_data[5]
             is_valid = obj_data[16]
-            
+
+            if class_id not in [0, 1, 2, 3, 4]:
+                is_valid = 0.0  # Zorla geçersiz yap, reward hesabına girmesin
+
+            if class_id == 0:
+                if closing_speed > 0.3:
+                    c_factor = 0.7   # Hareket ediyor → YOLO'nun kaçırdığı insan
+                elif closing_speed > 0.1:
+                    c_factor = 0.3   # Yavaş hareket → Belirsiz, orta risk
+                else:
+                    c_factor = 0.05  # Statik → Duvar, costmap halleder
+
+            elif class_id == 4:  # Person
+                c_factor = 0.6   # YOLO gördü, kesin insan
+
+            else:
+                # Drone/Bird/FixedWing maze'de yok
+                # Geliyorsa stale data veya hatalı publisher
+                c_factor = 0.0
+
             current_score = float(action[i])
             prev_score = self.prev_action[i]
             prev_risk = self.prev_target_risk[i] 
@@ -275,10 +320,8 @@ class ThreatAgentEnv(gym.Env):
                 if closing_speed > 0.1:
                     speed_score = np.clip(0.3 * closing_speed, 0.0, 0.8)
                 
-                raw_risk = np.clip(dist_score + speed_score, 0.0, 1.0)
-                c_factor = class_risk_map.get(class_id, 0.7)
-                
-                instant_target_risk = raw_risk * c_factor
+                raw_risk = np.clip(dist_score + speed_score, 0.0, 1.0)                
+                instant_target_risk = raw_risk * c_factor  # ← Artık doğru c_factor
                 
                 # Temporal Smoothing (EMA)
                 target_risk = alpha * instant_target_risk + (1 - alpha) * prev_risk
@@ -311,14 +354,19 @@ class ThreatAgentEnv(gym.Env):
                 
                 # --- FIX G: CRITICAL MISS PENALTY (Sessiz Ajan Fix) ---
                 # Eğer risk çok yüksek (>0.8) ama ajan uyuyorsa (<0.4), ekstra ceza!
-                if target_risk > 0.8 and current_score < 0.4:
-                    total_reward -= 2.0 # Çok ağır ceza, uyanması lazım.
+                if target_risk > 0.5 and current_score < 0.3:
+                    total_reward -= 1.5 # Çok ağır ceza, uyanması lazım.
 
                 # --- 2. CONFIDENCE BOOSTING (Drone vs Bird) ---
                 confidence_bonus = 0.0
-                if class_id == 1 and current_score > 0.8: # Drone + Yüksek Skor
+                # if class_id == 1 and current_score > 0.8: # Drone + Yüksek Skor
+                #     confidence_bonus = 0.1
+                # elif class_id == 2 and current_score < 0.3: # Kuş + Düşük Skor
+                #     confidence_bonus = 0.05
+                # Maze için sadece Person confidence boost:
+                if class_id == 4 and current_score > 0.6:   # Person + Yüksek Skor
                     confidence_bonus = 0.1
-                elif class_id == 2 and current_score < 0.3: # Kuş + Düşük Skor
+                elif class_id == 0 and closing_speed < 0.1 and current_score < 0.1:  # Duvar + Düşük Skor
                     confidence_bonus = 0.05
                 
                 total_reward += confidence_bonus
@@ -350,7 +398,7 @@ class ThreatAgentEnv(gym.Env):
             
             # --- FIX E: REWARD SCALING FIX ---
             # Valid count'a bölme KALDIRILDI. Clipping yapılıyor.
-            total_reward = np.clip(total_reward, -3.0, 3.0) # Limitler biraz genişletildi
+        total_reward = np.clip(total_reward, -3.0, 3.0) # Limitler biraz genişletildi
             
         # --- FIX F: METRICS GENERATION ---
         arr_actions = np.array(all_actions)
@@ -364,7 +412,7 @@ class ThreatAgentEnv(gym.Env):
         }
         
         # High Risk Coverage
-        high_risk_mask = arr_targets > 0.7
+        high_risk_mask = arr_targets > 0.4
         if np.any(high_risk_mask):
             coverage = np.sum(arr_actions[high_risk_mask] > 0.6) / np.sum(high_risk_mask)
             metrics["high_risk_coverage"] = float(coverage)
@@ -381,6 +429,7 @@ class ThreatAgentEnv(gym.Env):
     def close(self):
         self._running = False
         time.sleep(0.2)
-        self.node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        try:
+            self.node.destroy_node()
+        except Exception:
+            pass
