@@ -16,7 +16,7 @@ from geometry_msgs.msg import PoseStamped
 
 # ─── HIZLANMA PARAMETRESİ ───────────────────────────────────────────────────
 # Simülasyonda test et, gerçek uçuşta 1.5-2.0 ile başla
-MAX_SPEED = 3.0   # m/s   ← İstediğin kadar artırabilirsin (simülasyon: 5.0'e kadar)
+MAX_SPEED = 1.5   # m/s   ← İstediğin kadar artırabilirsin (simülasyon: 5.0'e kadar)
 
 
 class OffboardControl(Node):
@@ -63,7 +63,7 @@ class OffboardControl(Node):
         self.current_path    = []
         self.current_wp_index = 0
         self.current_pos_enu  = [0.0, 0.0, 0.0]
-        self.mission_altitude = -5.0
+        self.mission_altitude = -1.8
         self.acceptance_radius = 2.5
 
         self.route_waypoint      = None

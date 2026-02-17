@@ -304,7 +304,7 @@ def spawn_multiple_actors(walls, rows, cols):
 # ─── WALLS KAYDETME (auto_maze_navigator.py için) ──────────────────────────
 import json
 
-WALLS_SAVE_PATH = "/tmp/maze_walls.json"
+WALLS_SAVE_PATH = "/home/ubuntu/Desktop/maze_walls.json"
 
 def save_walls(walls, path=WALLS_SAVE_PATH):
     """

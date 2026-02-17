@@ -44,7 +44,7 @@ MISSION_ALT   = -5.0   # NED Z (negatif = yukarı)
 ARRIVAL_DIST  = 2.5    # Hedefe bu kadar yaklaşınca "ulaşıldı" say (metre)
 
 # Walls dosyası: maze scripti çalıştıktan sonra bu dosyaya kaydedilecek
-WALLS_FILE = "/home/ubuntu/Desktop/ros2_env/uav_ws/tmp/maze_walls.json"
+WALLS_FILE = "/home/ubuntu/Desktop/maze_walls.json"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
