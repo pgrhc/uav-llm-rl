@@ -40,7 +40,7 @@ class ThreatAgentEnv(gym.Env):
         self.prev_action = np.zeros(self.K, dtype=np.float32)
         self.prev_target_risk = np.zeros(self.K, dtype=np.float32) 
         self.class_seen_counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
-        self.shuffle_prob = 0.3
+        self.shuffle_prob = 0.1
 
         # --- 3. ROS 2 BAĞLANTILARI ---
         if not rclpy.ok():
@@ -203,11 +203,11 @@ class ThreatAgentEnv(gym.Env):
                 remaining = end - time.time()
                 if remaining > 0:
                     self.cond.wait(timeout=remaining)
-        self.node.get_logger().warn(
-            "Sensor timeout! Stale data kullanılıyor. "
-            f"(vec={self.new_vec}, lidar={self.new_lidar}, "
-            f"radar={self.new_radar}, yolo={self.new_yolo})"
-        )
+        # self.node.get_logger().warn(
+        #     "Sensor timeout! Stale data kullanılıyor. "
+        #     f"(vec={self.new_vec}, lidar={self.new_lidar}, "
+        #     f"radar={self.new_radar}, yolo={self.new_yolo})"
+        # )
         return False
 
     def reset(self, seed=None, options=None):

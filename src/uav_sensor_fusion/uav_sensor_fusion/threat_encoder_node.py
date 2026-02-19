@@ -13,15 +13,28 @@ import tf2_geometry_msgs
 import numpy as np
 from collections import deque
 
-# Radar msg (senin paket)
 from fusion_msgs.msg import RadarPoints
 from nav_msgs.msg import Odometry
 import math
 
 
-# ----------------------------
-# Track structure
-# ----------------------------
+# ══════════════════════════════════════════════════════════════════════════════
+# YOLO → Environment Class Mapping
+# ══════════════════════════════════════════════════════════════════════════════
+# COCO dataset class IDs → Environment expected class IDs
+# COCO:        0=person, 2=car, 16=bird, ...
+# Environment: 0=Unknown, 1=Drone, 2=Bird, 3=FixedWing, 4=Person
+# ══════════════════════════════════════════════════════════════════════════════
+
+YOLO_TO_ENV_CLASS = {
+    "0":  4,   # COCO person   → Environment Person
+    "16": 2,   # COCO bird     → Environment Bird
+    "2":  1,   # COCO car      → Environment Drone (yaklaşım)
+    "5":  1,   # COCO airplane → Environment Drone (yaklaşım)
+    # Diğer sınıflar Unknown (0) olarak map edilir
+}
+
+
 class Track:
     def __init__(self, tid: int, pos_xy, t_sec: float):
         self.id = tid
@@ -34,11 +47,10 @@ class Track:
         self.age = 1
         self.miss = 0
 
-        self.class_id = "-1"   # string (vision_msgs uses string)
+        self.class_id = 0   # ← Environment format: integer (0-4)
         self.yolo_conf = 0.0
         self.radar_conf = 0.0
         self.intensity = 0.0
-        
 
     def update(self, pos_xy, t_sec: float,
                class_id=None, yolo_conf=None,
@@ -46,30 +58,18 @@ class Track:
         pos = np.array(pos_xy, dtype=np.float32)
         dt = (t_sec - self.last_t)
 
-        # dt çok küçükse (aynı timestamp), velocity update yapma → spike önler
         if dt < 0.01 or dt > 1.0:
-            # küçük bir decay yeterli
             self.vel *= 0.9
         else:
             dp = pos - self.last_pos
             dist_moved = np.linalg.norm(dp)
 
-            # --- FIX STARTS HERE ---
-            
-            # 1. Zero-Velocity Gate: Increase threshold to 20-25cm
-            # If it moved less than this, FORCE velocity to zero.
-            if dist_moved < 0.25: 
+            if dist_moved < 0.25:
                 self.vel[:] = 0.0
             else:
-                # 2. Instantaneous velocity
                 v_inst = dp / dt
-                
-                # 3. Cap maximum realistic acceleration/velocity (Sanity Check)
-                # If a ball suddenly "moves" at 50 m/s, it's a glitch.
-                if np.linalg.norm(v_inst) < 15.0: 
-                    # 4. Smoother Alpha: Trust history (0.9) more than new noisy data (0.1)
+                if np.linalg.norm(v_inst) < 15.0:
                     self.vel = 0.9 * self.vel + 0.1 * v_inst
-                
 
         self.last_pos = pos
         self.pos = pos
@@ -79,7 +79,7 @@ class Track:
         self.miss = 0
 
         if class_id is not None:
-            self.class_id = str(class_id)
+            self.class_id = int(class_id)  # ← Integer olarak sakla
         if yolo_conf is not None:
             self.yolo_conf = float(yolo_conf)
         if radar_conf is not None:
@@ -91,118 +91,66 @@ class Track:
         self.miss += 1
 
 
-# ----------------------------
-# Main encoder node
-# ----------------------------
 class ThreatEncoderNode(Node):
     def __init__(self):
         super().__init__("threat_encoder_node")
 
-        # TF
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        # Params (istersen ros param yaparız)
         self.base_frame = "base_link"
-        self.radar_frame_default = "radar_link"  # msg.header.frame_id ile override olur
-        self.gate_dist = 2.0          # YOLO-radar association gate (m)
-        self.cluster_thr = 0.6        # radar clustering distance (m)
-        self.track_match_dist = 2.0   # track update gate (m)
-        self.max_miss = 10            # kaç tick kaybolunca silinsin
-        self.K = 5                    # Top-K
-        self.token_len = 17           # aşağıdaki tokenize() ile uyumlu
+        self.radar_frame_default = "radar_link"
+        self.gate_dist = 2.0
+        self.cluster_thr = 0.6
+        self.track_match_dist = 2.0
+        self.max_miss = 10
+        self.K = 5
+        self.token_len = 17
 
-        # Buffers
         self.latest_yolo = None
         self.latest_radar = None
-
-        # Tracks
         self.tracks = {}
         self.next_id = 1
-        
 
-        # Subs
         self.create_subscription(
-            Detection3DArray,
-            "/yolo/projected_detections",
-            self.cb_yolo,
-            10
-        )
+            Detection3DArray, "/yolo/projected_detections", self.cb_yolo, 10)
         self.create_subscription(
-            RadarPoints,
-            "/radar/points_filtered_radarmsg",
-            self.cb_radar,
-            10
-        )
+            RadarPoints, "/radar/points_filtered_radarmsg", self.cb_radar, 10)
 
-        # Pubs
         self.pub_state = self.create_publisher(Float32MultiArray, "/threat/state_vec", 10)
         self.pub_debug = self.create_publisher(String, "/threat/debug_topk", 10)
 
-        # Timer: encoder tick (ör. 10 Hz)
-        self.create_timer(0.1, self.tick)
-
-        
         self.uav_speed = 0.0
         self.uav_yaw = 0.0
-        self.create_subscription(
-                Odometry,
-                "/odometry/filtered",
-                self.cb_odom,
-                10
-            )
-        self.get_logger().info("ThreatEncoderNode started.")
-        
+        self.create_subscription(Odometry, "/odometry/filtered", self.cb_odom, 10)
+
+        self.create_timer(0.1, self.tick)
+        self.get_logger().info("ThreatEncoderNode started (FIXED class mapping)")
+
     def cb_odom(self, msg: Odometry):
         vx = float(msg.twist.twist.linear.x)
         vy = float(msg.twist.twist.linear.y)
-        # 2D speed
         self.uav_speed = math.sqrt(vx*vx + vy*vy)
 
-        # quaternion -> yaw
         qx = float(msg.pose.pose.orientation.x)
         qy = float(msg.pose.pose.orientation.y)
         qz = float(msg.pose.pose.orientation.z)
         qw = float(msg.pose.pose.orientation.w)
-
         self.uav_yaw = math.atan2(
             2.0 * (qw*qz + qx*qy),
             1.0 - 2.0 * (qy*qy + qz*qz)
         )
 
-    # ---------- callbacks ----------
     def cb_yolo(self, msg: Detection3DArray):
         self.latest_yolo = msg
 
     def cb_radar(self, msg: RadarPoints):
         self.latest_radar = msg
 
-    # ---------- helpers ----------
     def _stamp_to_sec(self, stamp) -> float:
         return float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
-    def _tf_point(self, x, y, z, stamp_ros, src_frame: str, dst_frame: str):
-        ps = PointStamped()
-        ps.header.stamp = stamp_ros
-        ps.header.frame_id = src_frame
-        ps.point.x = float(x)
-        ps.point.y = float(y)
-        ps.point.z = float(z)
-
-        tf = self.tf_buffer.lookup_transform(
-            dst_frame,
-            src_frame,
-            rclpy.time.Time.from_msg(stamp_ros)
-        )
-        out = tf2_geometry_msgs.do_transform_point(ps, tf)
-        return out.point.x, out.point.y, out.point.z
-
     def _cluster_radar(self, radar_xyi):
-        """
-        radar_xyi: list of (x,y,intensity)
-        naive proximity clustering: grow groups with cluster_thr
-        returns list of dict {pos:(x,y), intensity, radar_conf}
-        """
         if len(radar_xyi) == 0:
             return []
 
@@ -231,8 +179,6 @@ class ThreatEncoderNode(Node):
 
             c = pts[group].mean(axis=0)
             inten = float(intens[group].mean())
-
-            # radar_conf: intensity bazlı kaba normalizasyon (0..1 zaten gibi)
             radar_conf = float(np.clip(inten, 0.0, 1.0))
 
             clusters.append({
@@ -244,15 +190,9 @@ class ThreatEncoderNode(Node):
         return clusters
 
     def _associate_yolo_radar(self, yolo_list, radar_clusters):
-        """
-        yolo_list: list of dict {pos:(x,y), class_id, score}
-        radar_clusters: list of dict {pos:(x,y), intensity, radar_conf}
-        returns list of tuples: (yolo or None, radar or None)
-        """
         matches = []
         used_r = set()
 
-        # each yolo -> nearest radar
         for yd in yolo_list:
             best = None
             best_d = 1e9
@@ -270,7 +210,6 @@ class ThreatEncoderNode(Node):
             else:
                 matches.append((yd, None))
 
-        # leftover radar (no yolo)
         for ri, rc in enumerate(radar_clusters):
             if ri not in used_r:
                 matches.append((None, rc))
@@ -292,8 +231,6 @@ class ThreatEncoderNode(Node):
         updated = set()
 
         for yd, rc in matches:
-            # pos + timestamp seçimi:
-            # radar varsa radar zamanını kullan (daha stabil)
             if rc is not None:
                 pos = rc["pos"]
                 t_meas = radar_t
@@ -324,7 +261,6 @@ class ThreatEncoderNode(Node):
             )
             updated.add(tid)
 
-        # miss + delete
         to_del = []
         for tid, tr in self.tracks.items():
             if tid not in updated:
@@ -334,81 +270,92 @@ class ThreatEncoderNode(Node):
         for tid in to_del:
             del self.tracks[tid]
 
-    def _class_to_onehot4(self, class_id_str: str):
-        """
-        Sen sonra burada gerçek mapping yapacaksın.
-        Şimdilik: her şey unknown.
-        Format: [unknown, human, vehicle, obstacle]
-        """
-        onehot = [1.0, 0.0, 0.0, 0.0]
-
-        # İstersen hızlı demo mapping:
-        # COCO person=0
-        if class_id_str == "0":
-            onehot = [0.0, 1.0, 0.0, 0.0]
-
-        return onehot
-
     def _tokenize(self, tr: Track):
+        """
+        ═══════════════════════════════════════════════════════════════════
+        TOKEN FORMAT (17 features) — Environment Compatible
+        ═══════════════════════════════════════════════════════════════════
+        0:  obj_id         (track ID)
+        1:  class_id       (0=Unknown, 1=Drone, 2=Bird, 3=FixedWing, 4=Person)
+        2:  confidence     (max of YOLO/radar)
+        3:  intensity      (radar intensity)
+        4:  dist           (range to UAV)
+        5:  closing_speed  (radial velocity, positive=approaching)
+        6:  sin(bearing)
+        7:  cos(bearing)
+        8:  vx             (velocity X, base_link frame)
+        9:  vy             (velocity Y, base_link frame)
+        10: x              (position X, base_link frame)
+        11: y              (position Y, base_link frame)
+        12: radar_conf     (radar confidence)
+        13: yolo_conf      (YOLO confidence)
+        14: age_norm       (track age, normalized)
+        15: (reserved)
+        16: is_valid       (1.0 if valid track)
+        ═══════════════════════════════════════════════════════════════════
+        """
         x, y = float(tr.pos[0]), float(tr.pos[1])
         vx, vy = float(tr.vel[0]), float(tr.vel[1])
 
         r = float(np.hypot(x, y))
 
-        # radial closing rate (positive approaching)
         if r > 1e-3:
             closing = float(-(x * vx + y * vy) / r)
+            if abs(closing) < 0.2:  # Noise gate
+                closing = 0.0
             sn = float(y / r)
             cs = float(x / r)
         else:
             closing = 0.0
-            if abs(closing) < 0.2:
-                closing = 0.0
             sn, cs = 0.0, 1.0
 
-        onehot = self._class_to_onehot4(tr.class_id)
-
-        # age normalize: kaba (0..1)
+        conf = max(tr.yolo_conf, tr.radar_conf)
         age_norm = float(np.clip(tr.age / 50.0, 0.0, 1.0))
 
         token = [
-            x, y,
-            vx, vy,
-            r,
-            closing,
-            sn, cs,
-            onehot[0], onehot[1], onehot[2], onehot[3],
-            float(tr.radar_conf),
-            float(tr.yolo_conf),
-            float(tr.intensity),
-            age_norm,
-            1.0  # is_valid
+            float(tr.id),          # 0: obj_id
+            float(tr.class_id),    # 1: class_id (integer 0-4)
+            conf,                  # 2: confidence
+            float(tr.intensity),   # 3: intensity
+            r,                     # 4: dist
+            closing,               # 5: closing_speed
+            sn,                    # 6: sin(bearing)
+            cs,                    # 7: cos(bearing)
+            vx,                    # 8: vx
+            vy,                    # 9: vy
+            x,                     # 10: x
+            y,                     # 11: y
+            float(tr.radar_conf),  # 12: radar_conf
+            float(tr.yolo_conf),   # 13: yolo_conf
+            age_norm,              # 14: age_norm
+            0.0,                   # 15: reserved
+            1.0                    # 16: is_valid
         ]
         return token, r, closing
 
     def _pre_score(self, tr: Track):
         token, r, closing = self._tokenize(tr)
-
         conf = max(tr.yolo_conf, tr.radar_conf)
-        # class weight (şimdilik person yüksek)
-        if tr.class_id == "0":
+
+        # Class weight: Person > Unknown > Drone/Bird
+        if tr.class_id == 4:    # Person
             cw = 1.0
-        else:
-            cw = 0.3 if tr.class_id != "-1" else 0.1
+        elif tr.class_id == 0:  # Unknown
+            cw = 0.5
+        else:                   # Drone/Bird/FixedWing
+            cw = 0.2
 
         score = (1.0 / (r + 0.5)) + max(0.0, closing) + 0.2 * conf + 0.3 * cw
         return float(score)
 
-    # ---------- main tick ----------
     def tick(self):
         if self.latest_yolo is None or self.latest_radar is None:
             return
 
-        # Use a "now" time based on latest yolo stamp (reasonable)
         yolo_t = self._stamp_to_sec(self.latest_yolo.header.stamp)
         radar_t = self._stamp_to_sec(self.latest_radar.header.stamp)
 
-        # ---- YOLO list (already base_link) ----
+        # ── YOLO Processing ──────────────────────────────────────────────
         yolo_list = []
         for d in self.latest_yolo.detections:
             if len(d.results) == 0:
@@ -416,23 +363,27 @@ class ThreatEncoderNode(Node):
             hypo = d.results[0]
             x = float(hypo.pose.pose.position.x)
             y = float(hypo.pose.pose.position.y)
+
+            # ═══ CLASS MAPPING FIX ═══════════════════════════════════════
+            yolo_class_str = str(hypo.hypothesis.class_id)
+            env_class_id = YOLO_TO_ENV_CLASS.get(yolo_class_str, 0)  # Default: Unknown
+            # ═════════════════════════════════════════════════════════════
+
             yolo_list.append({
                 "pos": (x, y),
-                "class_id": hypo.hypothesis.class_id,
+                "class_id": env_class_id,  # ← Environment-compatible class ID
                 "score": float(hypo.hypothesis.score)
             })
 
-        # ---- Radar points -> base_link ----
+        # ── Radar Processing ─────────────────────────────────────────────
         radar_xyi = []
         r_stamp = self.latest_radar.header.stamp
         radar_frame = self.latest_radar.header.frame_id or self.radar_frame_default
 
-        # TF lookup once for speed (use stamp if possible)
         tf_ok = True
         try:
             tf = self.tf_buffer.lookup_transform(
-                self.base_frame,
-                radar_frame,
+                self.base_frame, radar_frame,
                 rclpy.time.Time.from_msg(r_stamp)
             )
         except Exception:
@@ -458,21 +409,15 @@ class ThreatEncoderNode(Node):
                 except Exception:
                     continue
             else:
-                # fallback: assume already base_link (not ideal)
                 xb, yb = x, y
 
             radar_xyi.append((xb, yb, inten))
 
-        # ---- Radar clustering ----
         radar_clusters = self._cluster_radar(radar_xyi)
-
-        # ---- Association YOLO <-> Radar ----
         matches = self._associate_yolo_radar(yolo_list, radar_clusters)
-
-        # ---- Track update ----
         self._update_tracks(matches, yolo_t, radar_t)
 
-        # ---- Top-K select ----
+        # ── Top-K Selection ──────────────────────────────────────────────
         scored = []
         for tid, tr in self.tracks.items():
             s = self._pre_score(tr)
@@ -481,20 +426,17 @@ class ThreatEncoderNode(Node):
         scored.sort(key=lambda x: x[0], reverse=True)
         topk = scored[: self.K]
 
-        # ---- Build state_vec ----
-        # UAV state (şimdilik 0): speed, yaw_sin, yaw_cos
+        # ── Build state_vec ──────────────────────────────────────────────
         yaw_sin = math.sin(self.uav_yaw)
         yaw_cos = math.cos(self.uav_yaw)
-
-        # normalize: max_speed = 5 m/s (istersen 10 yap)
         max_speed = 5.0
         speed_norm = float(np.clip(self.uav_speed / max_speed, 0.0, 1.0))
 
-        vec = [speed_norm, yaw_sin, yaw_cos]
+        vec = [speed_norm, yaw_sin, yaw_cos]  # UAV state (3 values)
 
         for i in range(self.K):
             if i < len(topk):
-                vec.extend(topk[i][2])
+                vec.extend(topk[i][2])  # 17 values per object
             else:
                 vec.extend([0.0] * self.token_len)
 
@@ -502,16 +444,20 @@ class ThreatEncoderNode(Node):
         msg.data = vec
         self.pub_state.publish(msg)
 
-        # ---- Debug string ----
-        # format: id:r:closing:class:conf
+        # ── Debug Output ─────────────────────────────────────────────────
         parts = []
+        class_names = {0: "Unknown", 1: "Drone", 2: "Bird", 3: "FixedWing", 4: "Person"}
         for s, tid, token, tr in topk:
             x, y = tr.pos
             r = float(np.hypot(x, y))
-            # closing from tokenize (token[5])
             closing = float(token[5])
             conf = max(tr.yolo_conf, tr.radar_conf)
-            parts.append(f"id={tid} r={r:.2f} cl={closing:.2f} vx={tr.vel[0]:.2f} vy={tr.vel[1]:.2f} cls={tr.class_id} conf={conf:.2f}\n")
+            cls_name = class_names.get(tr.class_id, "?")
+            parts.append(
+                f"id={tid} cls={cls_name} r={r:.2f} "
+                f"vel=({tr.vel[0]:.2f},{tr.vel[1]:.2f}) "
+                f"closing={closing:.2f} conf={conf:.2f}"
+            )
         dbg = String()
         dbg.data = " | ".join(parts) if parts else "no_tracks"
         self.pub_debug.publish(dbg)

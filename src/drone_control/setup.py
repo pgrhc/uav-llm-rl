@@ -31,6 +31,7 @@ setup(
             "follow_path = drone_control.follow_path:main",
             "go_to_maze_exit = drone_control.go_to_maze_exit:main",
             "auto_maze_navigator = drone_control.auto_maze_navigator:main",
+            "drone_navigator = drone_control.drone_navigator:main",
         ],
     },
 )

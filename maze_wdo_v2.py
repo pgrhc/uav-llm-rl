@@ -11,12 +11,12 @@ WALL_THICKNESS = 0.2
 CELL_SIZE = 5.0
 Z_CENTER = WALL_HEIGHT / 2
 
-ROWS, COLS = 10, 10
+ROWS, COLS = 15, 15
 random.seed(time.time_ns())
 
 # --- DÜZELTME 1: İNSAN SAYISI AYARI ---
 # Labirentteki hücrelerin %15'ine insan koy (Eskiden 0.03 idi)
-ACTOR_DENSITY = 0.15  
+ACTOR_DENSITY = 0.3  
 # Drone Spawn Merkezi
 DRONE_SPAWN_CELL = (ROWS // 2, COLS // 2)
 # İnsanların spawn noktasına yaklaşmaması gereken mesafe (hücre cinsinden)
@@ -216,7 +216,7 @@ def pick_actor_count(rows, cols):
     area = rows * cols
     # %15 yoğunluk (Örn: 100 hücrede 15 insan)
     n = max(1, int(area * ACTOR_DENSITY))
-    return min(n, 20) # Max sınırını da artırdım
+    return min(n, 150) # Max sınırını da artırdım
 
 def build_actor_sdf(actor_name, skin_uri, anim_uri, x1, y1, x2, y2, is_horiz):
     # Dikey ise 90 derece (1.57), Yatay ise 0 derece

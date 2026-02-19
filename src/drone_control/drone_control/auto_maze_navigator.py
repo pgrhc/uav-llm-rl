@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-auto_maze_navigator.py
-─────────────────────
-Drone'u maze içinde otomatik olarak A* ile gezdiren ROS2 node'u.
+auto_maze_navigator.py  —  Frontier-Based Exploration
+──────────────────────────────────────────────────────
+Eski: Rastgele hedef seç → direkt git (keşif yok)
+Yeni: Hiç gidilmemiş komşu hücreleri (frontier) önceliklendir
+      → Drone maze'i sistematik olarak tarar, tüm koridorları gezir.
 
-Çalışma mantığı:
-  1. Maze bilgisini (walls) dışarıdan alır veya kendi üretir.
-  2. Mevcut hücreyi odometry'den hesaplar.
-  3. Rastgele bir hedef hücre seçer, A* ile yol bulur.
-  4. Waypoint'leri /plan topic'ine publish eder.
-  5. Hedefe ulaşınca yeni hedef seçer → sonsuz döngü.
-
-Bu sayede RViz2'den manuel goal vermek gerekmez.
+Strateji:
+  1. Ziyaret edilmemiş hücreleri takip et (visited set).
+  2. Her adımda mevcut hücrenin erişilebilir komşularından
+     ZİYARET EDİLMEMİŞ olanları "frontier" olarak listele.
+  3. Frontier boşsa uzak bir ziyaret edilmemiş hücreye git.
+  4. Her yer gezilince yeniden başla (sıfırla).
 """
 
 import rclpy
@@ -24,343 +24,265 @@ from geometry_msgs.msg import PoseStamped
 import math
 import heapq
 import random
-import time
 import json
 import os
 
 
-# ── Maze parametreleri (maze_with_dynamic_obstacles.py ile aynı olmalı) ──
-ROWS       = 10
-COLS       = 10
-CELL_SIZE  = 5.0
-DRONE_SPAWN_CELL = (ROWS // 2, COLS // 2)   # (5, 5)
+# ── Maze parametreleri ────────────────────────────────────────────────────────
+ROWS             = 15
+COLS             = 15
+CELL_SIZE        = 5.0
+DRONE_SPAWN_CELL = (ROWS // 2, COLS // 2)
 
-# Dünya koordinatlarına dönüşüm için offset
 SPAWN_R, SPAWN_C = DRONE_SPAWN_CELL
-ORIGIN_X = -(SPAWN_C + 0.5) * CELL_SIZE   # ENU X
-ORIGIN_Y = -(SPAWN_R + 0.5) * CELL_SIZE   # ENU Y
+ORIGIN_X = -(SPAWN_C + 0.5) * CELL_SIZE
+ORIGIN_Y = -(SPAWN_R + 0.5) * CELL_SIZE
 
-MISSION_ALT   = -5.0   # NED Z (negatif = yukarı)
-ARRIVAL_DIST  = 2.5    # Hedefe bu kadar yaklaşınca "ulaşıldı" say (metre)
+ARRIVAL_DIST  = 2.0    # Hedefe bu kadar yaklaşınca "ulaşıldı" say
 
-# Walls dosyası: maze scripti çalıştıktan sonra bu dosyaya kaydedilecek
 WALLS_FILE = "/home/ubuntu/Desktop/maze_walls.json"
 
+DIRS_RC = {"N": (-1, 0), "S": (1, 0), "E": (0, 1), "W": (0, -1)}
 
-# ═══════════════════════════════════════════════════════════════════════════
-# YARDIMCI: Hücre ↔ Dünya Koordinat Dönüşümleri
-# ═══════════════════════════════════════════════════════════════════════════
 
-def cell_to_world(r: int, c: int):
-    """Hücre (row, col) → Dünya ENU koordinatı (x, y)"""
+# ── Koordinat dönüşümleri ─────────────────────────────────────────────────────
+
+def cell_to_world(r, c):
     x = ORIGIN_X + (c + 0.5) * CELL_SIZE
     y = ORIGIN_Y + (r + 0.5) * CELL_SIZE
     return x, y
 
-def world_to_cell(x: float, y: float):
-    """Dünya ENU koordinatı (x, y) → En yakın hücre (row, col)"""
+def world_to_cell(x, y):
     c = int((x - ORIGIN_X) / CELL_SIZE)
     r = int((y - ORIGIN_Y) / CELL_SIZE)
-    r = max(0, min(ROWS - 1, r))
-    c = max(0, min(COLS - 1, c))
-    return r, c
+    return max(0, min(ROWS-1, r)), max(0, min(COLS-1, c))
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# A* ALGORİTMASI
-# ═══════════════════════════════════════════════════════════════════════════
+# ── A* ────────────────────────────────────────────────────────────────────────
 
-DIRS_RC = {"N": (-1, 0), "S": (1, 0), "E": (0, 1), "W": (0, -1)}
-
-def astar(walls, start: tuple, goal: tuple):
-    """
-    walls: maze_with_dynamic_obstacles.py'deki 'walls' listesi
-    start/goal: (row, col)
-    Döndürür: [(row,col), ...] listesi (başlangıç dahil, hedef dahil)
-    """
+def astar(walls, start, goal):
     def h(a, b):
-        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+        return abs(a[0]-b[0]) + abs(a[1]-b[1])
 
-    open_heap = []
-    heapq.heappush(open_heap, (h(start, goal), 0, start))
-
+    heap = [(h(start, goal), 0, start)]
     came_from = {start: None}
-    g_cost    = {start: 0}
+    g = {start: 0}
 
-    while open_heap:
-        _, g, current = heapq.heappop(open_heap)
-
-        if current == goal:
-            # Yolu geri izle
-            path = []
-            node = goal
+    while heap:
+        _, cost, cur = heapq.heappop(heap)
+        if cur == goal:
+            path, node = [], goal
             while node is not None:
                 path.append(node)
                 node = came_from[node]
-            path.reverse()
-            return path
-
-        r, c = current
-        for direction, (dr, dc) in DIRS_RC.items():
-            # Bu yönde duvar var mı?
-            if walls[r][c][direction]:
-                continue
-            neighbor = (r + dr, c + dc)
-            if not (0 <= neighbor[0] < ROWS and 0 <= neighbor[1] < COLS):
-                continue
-            new_g = g + 1
-            if neighbor not in g_cost or new_g < g_cost[neighbor]:
-                g_cost[neighbor] = new_g
-                came_from[neighbor] = current
-                f = new_g + h(neighbor, goal)
-                heapq.heappush(open_heap, (f, new_g, neighbor))
-
-    return []   # Yol bulunamadı
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# DUVAR YÜKLEYİCİ
-# ═══════════════════════════════════════════════════════════════════════════
-
-def load_walls_from_file(path: str):
-    """maze_with_dynamic_obstacles.py'nin kaydettiği walls JSON'ını yükle."""
-    with open(path, "r") as f:
-        raw = json.load(f)
-    # JSON key'leri string, biz aynı formatı döndürüyoruz
-    return raw
-
-def generate_fallback_maze():
-    """
-    Walls dosyası yoksa basit bir maze üret
-    (maze_with_dynamic_obstacles.py'deki algoritmanın kopyası).
-    """
-    import random as _r
-
-    walls = [[{"N": True, "E": True, "S": True, "W": True}
-              for _ in range(COLS)] for _ in range(ROWS)]
-    vis = [[False] * COLS for _ in range(ROWS)]
-    stack = [(0, 0)]
-    vis[0][0] = True
-
-    OPP = {"N": "S", "S": "N", "E": "W", "W": "E"}
-
-    while stack:
-        r, c = stack[-1]
-        neigh = []
+            return list(reversed(path))
+        r, c = cur
         for d, (dr, dc) in DIRS_RC.items():
-            rr, cc = r + dr, c + dc
-            if 0 <= rr < ROWS and 0 <= cc < COLS and not vis[rr][cc]:
-                neigh.append((d, rr, cc))
-        if not neigh:
-            stack.pop()
-            continue
-        d, rr, cc = _r.choice(neigh)
+            if walls[r][c][d]:
+                continue
+            nb = (r+dr, c+dc)
+            if not (0 <= nb[0] < ROWS and 0 <= nb[1] < COLS):
+                continue
+            ng = cost + 1
+            if nb not in g or ng < g[nb]:
+                g[nb] = ng
+                came_from[nb] = cur
+                heapq.heappush(heap, (ng + h(nb, goal), ng, nb))
+    return []
+
+
+# ── Walls yükleme ─────────────────────────────────────────────────────────────
+
+def load_walls():
+    if os.path.exists(WALLS_FILE):
+        try:
+            with open(WALLS_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    # Fallback: basit maze üret
+    walls = [[{"N":True,"E":True,"S":True,"W":True} for _ in range(COLS)]
+             for _ in range(ROWS)]
+    vis   = [[False]*COLS for _ in range(ROWS)]
+    OPP   = {"N":"S","S":"N","E":"W","W":"E"}
+    stack = [(0,0)]
+    vis[0][0] = True
+    while stack:
+        r,c = stack[-1]
+        nb = [(d,r+dr,c+dc) for d,(dr,dc) in DIRS_RC.items()
+              if 0<=r+dr<ROWS and 0<=c+dc<COLS and not vis[r+dr][c+dc]]
+        if not nb:
+            stack.pop(); continue
+        d,rr,cc = random.choice(nb)
         walls[r][c][d] = False
         walls[rr][cc][OPP[d]] = False
         vis[rr][cc] = True
-        stack.append((rr, cc))
-
-    # Giriş/çıkış aç
+        stack.append((rr,cc))
     walls[0][0]["N"] = False
-    walls[ROWS - 1][COLS - 1]["S"] = False
-
-    # Spawn hücresi etrafını aç
-    sr, sc = DRONE_SPAWN_CELL
-    for d in ["N", "S", "E", "W"]:
+    walls[ROWS-1][COLS-1]["S"] = False
+    sr,sc = DRONE_SPAWN_CELL
+    for d in ["N","S","E","W"]:
         walls[sr][sc][d] = False
-
     return walls
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ANA NODE
-# ═══════════════════════════════════════════════════════════════════════════
+# ── Ana Node ──────────────────────────────────────────────────────────────────
 
 class AutoMazeNavigator(Node):
 
     def __init__(self):
         super().__init__("auto_maze_navigator")
 
-        # QoS
-        qos_reliable = QoSProfile(
+        qos_rel = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10
-        )
+            history=HistoryPolicy.KEEP_LAST, depth=10)
         qos_be = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10
-        )
+            history=HistoryPolicy.KEEP_LAST, depth=10)
 
-        # Publisher: /plan → follow_path.py dinliyor
-        self.path_pub = self.create_publisher(Path, "/plan", qos_reliable)
-
-        # Subscriber: Odometry
+        self.path_pub = self.create_publisher(Path, "/plan", qos_rel)
         self.odom_sub = self.create_subscription(
-            Odometry, "/odometry/filtered", self.odom_callback, qos_be)
+            Odometry, "/odometry/filtered", self.odom_cb, qos_be)
 
-        # Durum
-        self.current_pos_enu = [0.0, 0.0, 0.0]
-        self.odom_received    = False
-        self.navigating       = False
-        self.current_goal_cell = None
-        self.path_cells        = []
-        self.current_wp_idx    = 0
+        self.pos_enu    = [0.0, 0.0, 0.0]
+        self.odom_ok    = False
+        self.navigating = False
+        self.goal_cell  = None
 
-        # Maze duvarlarını yükle
-        self.walls = self._load_walls()
+        self.walls   = load_walls()
+        self.visited = set()
+        self.visited.add(DRONE_SPAWN_CELL)
+
         self.get_logger().info(
-            f"Maze yüklendi: {ROWS}x{COLS}, "
-            f"Spawn: {DRONE_SPAWN_CELL}"
+            f"Maze yüklendi {ROWS}x{COLS}. "
+            f"Toplam {ROWS*COLS} hücre keşfedilecek."
         )
 
-        # 2 saniyede bir durum kontrolü
-        self.timer = self.create_timer(2.0, self.navigation_loop)
-        self.get_logger().info("AutoMazeNavigator başlatıldı. Odometry bekleniyor...")
+        self.timer = self.create_timer(1.5, self.loop)
 
-    # ── Duvar Yükleme ──────────────────────────────────────────────────────
+    # ── Odometry ──────────────────────────────────────────────────────────────
 
-    def _load_walls(self):
-        if os.path.exists(WALLS_FILE):
-            try:
-                walls = load_walls_from_file(WALLS_FILE)
-                self.get_logger().info(f"Walls dosyadan yüklendi: {WALLS_FILE}")
-                return walls
-            except Exception as e:
-                self.get_logger().warn(f"Walls dosyası okunamadı: {e}, fallback üretiliyor.")
-        else:
-            self.get_logger().warn(
-                f"{WALLS_FILE} bulunamadı. "
-                "maze_with_dynamic_obstacles.py'ye save_walls() ekle! "
-                "Şimdilik rastgele maze üretiliyor."
-            )
-        return generate_fallback_maze()
-
-    # ── Odometry ───────────────────────────────────────────────────────────
-
-    def odom_callback(self, msg: Odometry):
-        self.current_pos_enu = [
+    def odom_cb(self, msg):
+        self.pos_enu = [
             msg.pose.pose.position.x,
             msg.pose.pose.position.y,
             msg.pose.pose.position.z
         ]
-        self.odom_received = True
+        self.odom_ok = True
+        self.visited.add(world_to_cell(self.pos_enu[0], self.pos_enu[1]))
 
-    # ── Ana Navigasyon Döngüsü ─────────────────────────────────────────────
+    # ── Ana Döngü ─────────────────────────────────────────────────────────────
 
-    def navigation_loop(self):
-        if not self.odom_received:
-            self.get_logger().info("Odometry bekleniyor...")
+    def loop(self):
+        if not self.odom_ok:
             return
 
-        curr_x, curr_y, _ = self.current_pos_enu
-        curr_cell = world_to_cell(curr_x, curr_y)
+        curr_cell = world_to_cell(self.pos_enu[0], self.pos_enu[1])
 
-        # Hedefe ulaşıldı mı?
-        if self.navigating and self.current_goal_cell is not None:
-            goal_x, goal_y = cell_to_world(*self.current_goal_cell)
-            dist = math.sqrt((curr_x - goal_x)**2 + (curr_y - goal_y)**2)
-
+        if self.navigating and self.goal_cell:
+            gx, gy = cell_to_world(*self.goal_cell)
+            dist = math.hypot(self.pos_enu[0]-gx, self.pos_enu[1]-gy)
             if dist < ARRIVAL_DIST:
                 self.get_logger().info(
-                    f"✅ Hedefe ulaşıldı! "
-                    f"Hücre: {self.current_goal_cell}, "
-                    f"Dist: {dist:.2f}m"
+                    f"✅ Ulaşıldı: {self.goal_cell}  "
+                    f"Gezilen: {len(self.visited)}/{ROWS*COLS} hücre"
                 )
+                self.visited.add(self.goal_cell)
                 self.navigating = False
-                # Kısa bekleme
-                time.sleep(0.5)
 
-        # Yeni hedef seç ve yol planla
         if not self.navigating:
-            self._plan_new_goal(curr_cell)
+            self._pick_next_goal(curr_cell)
 
-    def _plan_new_goal(self, start_cell: tuple):
-        """Rastgele bir hedef seç, A* ile yol bul, /plan'a publish et."""
+    # ── Hedef Seçimi (Frontier-Based) ─────────────────────────────────────────
 
-        # Spawn hücresinden uzak bir hedef seç
-        attempts = 0
-        goal_cell = start_cell
+    def _pick_next_goal(self, curr_cell):
+        """
+        Öncelik sırası:
+          1. Mevcut hücreden duvarsız geçişle ulaşılabilen ziyaret edilmemiş komşu
+          2. Tüm maze'den en yakın ziyaret edilmemiş hücre (A* ile gidilir)
+          3. Hepsi gezilmişse sıfırla
+        """
+        frontiers = self._get_frontiers(curr_cell)
 
-        while goal_cell == start_cell or self._manhattan(goal_cell, start_cell) < 3:
-            goal_cell = (
-                random.randint(0, ROWS - 1),
-                random.randint(0, COLS - 1)
-            )
-            attempts += 1
-            if attempts > 50:
-                self.get_logger().warn("Uygun hedef bulunamadı, spawn hücresi kullanılıyor.")
-                goal_cell = (0, 0)
-                break
+        if frontiers:
+            goal   = random.choice(frontiers)
+            reason = "komşu frontier"
+        else:
+            goal = self._nearest_unvisited(curr_cell)
+            if goal:
+                reason = "uzak frontier"
+            else:
+                self.get_logger().info("🏁 Tüm maze gezildi! Keşif sıfırlanıyor...")
+                self.visited.clear()
+                self.visited.add(curr_cell)
+                goal   = self._nearest_unvisited(curr_cell)
+                reason = "yeniden başlangıç"
 
-        self.get_logger().info(
-            f"🎯 Yeni hedef: {goal_cell} "
-            f"(Start: {start_cell}, Manhattan: {self._manhattan(start_cell, goal_cell)})"
-        )
-
-        # A* ile yol bul
-        path_cells = astar(self.walls, start_cell, goal_cell)
-
-        if not path_cells:
-            self.get_logger().warn(f"A* yol bulamadı: {start_cell} → {goal_cell}")
+        if goal is None:
             return
 
-        self.get_logger().info(f"🗺️  A* yol uzunluğu: {len(path_cells)} hücre")
+        path_cells = astar(self.walls, curr_cell, goal)
+        if not path_cells:
+            self.get_logger().warn(f"A* yol bulamadı: {curr_cell} → {goal}")
+            self.visited.add(goal)
+            return
 
-        # /plan için Path mesajı oluştur
-        path_msg = Path()
-        path_msg.header.stamp    = self.get_clock().now().to_msg()
-        path_msg.header.frame_id = "map"
+        self.get_logger().info(
+            f"🎯 Hedef: {goal} ({reason})  "
+            f"Yol: {len(path_cells)} adım  "
+            f"Gezilen: {len(self.visited)}/{ROWS*COLS}"
+        )
+
+        self._publish_path(path_cells)
+        self.goal_cell  = goal
+        self.navigating = True
+
+    def _get_frontiers(self, cell):
+        """Duvarsız geçişle ulaşılabilen, ziyaret edilmemiş komşular."""
+        r, c = cell
+        return [
+            (r+dr, c+dc)
+            for d, (dr, dc) in DIRS_RC.items()
+            if not self.walls[r][c][d]
+            and 0 <= r+dr < ROWS and 0 <= c+dc < COLS
+            and (r+dr, c+dc) not in self.visited
+        ]
+
+    def _nearest_unvisited(self, curr_cell):
+        """Tüm ziyaret edilmemişler arasından Manhattan mesafesiyle en yakın 3'ten biri."""
+        all_cells = {(r, c) for r in range(ROWS) for c in range(COLS)}
+        unvisited = sorted(
+            all_cells - self.visited,
+            key=lambda nb: abs(nb[0]-curr_cell[0]) + abs(nb[1]-curr_cell[1])
+        )
+        if not unvisited:
+            return None
+        candidates = unvisited[:min(3, len(unvisited))]
+        return random.choice(candidates)
+
+    # ── Path Publish ──────────────────────────────────────────────────────────
+
+    def _publish_path(self, path_cells):
+        msg = Path()
+        msg.header.stamp    = self.get_clock().now().to_msg()
+        msg.header.frame_id = "map"
 
         for (r, c) in path_cells:
             wx, wy = cell_to_world(r, c)
             pose = PoseStamped()
-            pose.header.stamp    = path_msg.header.stamp
-            pose.header.frame_id = "map"
+            pose.header = msg.header
             pose.pose.position.x = wx
             pose.pose.position.y = wy
             pose.pose.position.z = 0.0   # follow_path.py kendi altitude'unu kullanır
             pose.pose.orientation.w = 1.0
-            path_msg.poses.append(pose)
+            msg.poses.append(pose)
 
-        self.path_pub.publish(path_msg)
-        self.get_logger().info(
-            f"📤 /plan publish edildi: {len(path_msg.poses)} waypoint"
-        )
-
-        self.current_goal_cell = goal_cell
-        self.navigating        = True
-
-    @staticmethod
-    def _manhattan(a: tuple, b: tuple) -> int:
-        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+        self.path_pub.publish(msg)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# MAZE SCRIPT'E EKLENECEKLERİ (maze_with_dynamic_obstacles.py sonuna ekle)
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# import json
-#
-# def save_walls(walls, path="/tmp/maze_walls.json"):
-#     """Walls verisini JSON'a kaydet → auto_maze_navigator okuyacak."""
-#     with open(path, "w") as f:
-#         json.dump(walls, f)
-#     print(f"✅ Walls kaydedildi: {path}")
-#
-# if __name__ == "__main__":
-#     walls = generate_perfect_maze(ROWS, COLS)
-#     save_walls(walls)                    # ← BU SATIRI EKLE
-#     segments = maze_to_segments(...)
-#     ...
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# MAIN
-# ═══════════════════════════════════════════════════════════════════════════
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main(args=None):
     rclpy.init(args=args)
@@ -372,7 +294,6 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()
