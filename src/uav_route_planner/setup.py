@@ -26,8 +26,9 @@ setup(
             'costmap_patch_node = uav_route_planner.costmap_patch_node:main',
             'heuristic_planner_node = uav_route_planner.heuristic_planner_node:main',
             'route_safety_filter_node = uav_route_planner.route_safety_filter_node:main',
-            # Faz 1: RL ajanı (sonra eklenecek)
-            # 'route_planner_agent_node = uav_route_planner.route_planner_agent_node:main',
+            # Faz 1: RL route agent
+            'train_route_node = uav_route_planner.nodes.train_route_node:main',
+            'route_agent_node = uav_route_planner.nodes.route_agent_node:main',
         ],
     },
 )

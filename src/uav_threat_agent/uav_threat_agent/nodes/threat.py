@@ -538,7 +538,7 @@ class ThreatEncoderNode(Node):
         # format: id:r:closing:class:conf
         parts = []
         for s, tid, token, tr in topk:
-            x, y = tr.pos
+            x, y, z = tr.pos
             r = float(np.hypot(x, y))
             # closing from tokenize (token[5])
             closing = float(token[5])
