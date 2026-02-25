@@ -8,6 +8,7 @@ import math
 from px4_msgs.msg import OffboardControlMode
 from px4_msgs.msg import TrajectorySetpoint
 from px4_msgs.msg import VehicleCommand
+from px4_msgs.msg import VehicleStatus  # EKLENEN
 
 from nav_msgs.msg import Path
 from nav_msgs.msg import Odometry
@@ -35,11 +36,8 @@ MAX_YAW_RATE = 0.6
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─── PİNG-PONG ÖNLEYİCİ AYARLAR (EKLENDİ) ────────────────────────────────────
-# En yakın waypoint aramasını tüm path yerine sınırlı pencerede yap (performans + stabilite)
-CLOSEST_SEARCH_WINDOW = 50   # index etrafında bakılacak pencere (path uzunluğuna göre artırılabilir)
-
-# Yeni gelen plan gerçekten “farklıysa” index resetle, değilse koru
-PATH_RESET_DIST = 1.0        # metre (plan başlangıcı çok değiştiyse reset)
+CLOSEST_SEARCH_WINDOW = 50
+PATH_RESET_DIST = 1.0
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -72,6 +70,10 @@ class OffboardControl(Node):
             Odometry, '/odometry/filtered', self.odom_callback, qos_standard)
         self.path_sub = self.create_subscription(
             Path, '/plan', self.path_callback, qos_standard)
+        
+        # EKLENEN: Vehicle status subscriber
+        self.vehicle_status_sub = self.create_subscription(
+            VehicleStatus, '/fmu/out/vehicle_status', self.vehicle_status_callback, qos_px4)
 
         self.offboard_setpoint_counter = 0
         self.current_path = []
@@ -86,15 +88,28 @@ class OffboardControl(Node):
         self.sp_n = None
         self.sp_e = None
 
-        # Plan değişimini kabaca takip etmek için
         self.last_plan_start = None
         self.last_plan_end = None
+
+        # EKLENEN: Durum takibi için
+        self.vehicle_status = None
+        self.arming_state = 0
+        self.nav_state = 0
+        self.offboard_mode_attempted = False
+        self.arm_attempted = False
+        self.initialization_complete = False
 
         self.timer = self.create_timer(TIMER_PERIOD, self.timer_callback)
         self.get_logger().info(
             f"ADAPTİF MOD: Max={MAX_LOOKAHEAD}m, Min={MIN_LOOKAHEAD}m | "
             f"Timer={TIMER_PERIOD}s | Alpha={SETPOINT_ALPHA} | MaxStep={MAX_SETPOINT_STEP}m"
         )
+
+    def vehicle_status_callback(self, msg):
+        """Vehicle durumunu takip et"""
+        self.vehicle_status = msg
+        self.arming_state = msg.arming_state
+        self.nav_state = msg.nav_state
 
     def odom_callback(self, msg):
         self.current_pos_enu = [
@@ -117,11 +132,9 @@ class OffboardControl(Node):
             self.last_plan_end = None
             return
 
-        # Planın başı/sonu
         start = poses[0].pose.position
         end = poses[-1].pose.position
 
-        # Eğer daha önce plan yoksa direkt al
         if self.last_plan_start is None or self.last_plan_end is None:
             self.current_path = poses
             self.path_index = 0
@@ -129,7 +142,6 @@ class OffboardControl(Node):
             self.last_plan_end = end
             return
 
-        # Yeni plan gerçekten çok farklı mı? (baş noktası çok değiştiyse)
         ds = math.sqrt((start.x - self.last_plan_start.x) ** 2 + (start.y - self.last_plan_start.y) ** 2)
         de = math.sqrt((end.x - self.last_plan_end.x) ** 2 + (end.y - self.last_plan_end.y) ** 2)
         plan_changed_a_lot = (ds > PATH_RESET_DIST) or (de > PATH_RESET_DIST)
@@ -138,28 +150,87 @@ class OffboardControl(Node):
         self.last_plan_start = start
         self.last_plan_end = end
 
-        # Çok değiştiyse resetle, değilse index’i koru (ping-pong’u azaltır)
         if plan_changed_a_lot:
             self.path_index = 0
 
     def timer_callback(self):
-        if self.offboard_setpoint_counter == 10:
-            self.publish_vehicle_command(
-                VehicleCommand.VEHICLE_CMD_DO_SET_MODE, param1=1.0, param2=6.0
-            )
-            self.arm()
-
+        """
+        GELİŞTİRİLMİŞ: Sıralı ve kontrollü başlatma
+        1. Önce yeterli setpoint gönder (en az 2 saniye = 40 döngü @ 50ms)
+        2. Sonra offboard mode'a geç
+        3. Mode geçişini kontrol et
+        4. Son olarak arm et
+        """
+        # Her durumda setpoint ve control mode gönder
         self.publish_offboard_control_mode()
         self.publish_trajectory_setpoint()
 
-        if self.offboard_setpoint_counter < 11:
-            self.offboard_setpoint_counter += 1
+        # Başlatma sekansı
+        if not self.initialization_complete:
+            # Adım 1: En az 50 setpoint gönder (2.5 saniye @ 50ms)
+            if self.offboard_setpoint_counter < 50:
+                self.offboard_setpoint_counter += 1
+                if self.offboard_setpoint_counter == 49:
+                    self.get_logger().info("✓ Yeterli setpoint gönderildi, offboard mode'a geçiliyor...")
+                return
+
+            # Adım 2: Offboard mode'a geç (bir kere dene)
+            if not self.offboard_mode_attempted:
+                self.get_logger().info("→ Offboard mode komutu gönderiliyor...")
+                self.publish_vehicle_command(
+                    VehicleCommand.VEHICLE_CMD_DO_SET_MODE, param1=1.0, param2=6.0
+                )
+                self.offboard_mode_attempted = True
+                self.offboard_setpoint_counter += 1
+                return
+
+            # Adım 3: Offboard mode'un aktif olmasını bekle (en az 1 saniye = 20 döngü)
+            if self.offboard_setpoint_counter < 70:  # 50 + 20
+                self.offboard_setpoint_counter += 1
+                
+                # Nav state kontrolü: 14 = Offboard mode
+                if self.vehicle_status and self.nav_state == 14:
+                    self.get_logger().info("✓ Offboard mode aktif!")
+                    self.offboard_setpoint_counter = 70  # Hızlıca arm adımına geç
+                elif self.offboard_setpoint_counter == 69:
+                    if self.vehicle_status and self.nav_state != 14:
+                        self.get_logger().warn(
+                            f"⚠ Offboard mode henüz aktif değil (nav_state: {self.nav_state}). "
+                            "Yine de arm deneniyor..."
+                        )
+                return
+
+            # Adım 4: Arm et (bir kere dene)
+            if not self.arm_attempted:
+                self.get_logger().info("→ Arm komutu gönderiliyor...")
+                self.arm()
+                self.arm_attempted = True
+                self.offboard_setpoint_counter += 1
+                return
+
+            # Adım 5: Arm durumunu kontrol et (1 saniye bekle)
+            if self.offboard_setpoint_counter < 90:  # 70 + 20
+                self.offboard_setpoint_counter += 1
+                
+                # Arming state: 2 = Armed
+                if self.vehicle_status and self.arming_state == 2:
+                    self.get_logger().info("✓✓✓ Drone armed ve hazır! ✓✓✓")
+                    self.initialization_complete = True
+                elif self.offboard_setpoint_counter == 89:
+                    if self.vehicle_status and self.arming_state != 2:
+                        self.get_logger().error(
+                            f"✗ Arm başarısız! (arming_state: {self.arming_state}). "
+                            "QGroundControl'den manuel arm etmeyi deneyin."
+                        )
+                    else:
+                        self.get_logger().warn("⚠ Vehicle status alınamıyor, arm durumu belirsiz.")
+                    self.initialization_complete = True  # Yine de devam et
+                return
+
+        # Normal operasyon
+        self.offboard_setpoint_counter += 1
 
     def _find_closest_index_nearby(self):
-        """
-        Drone'a en yakın waypoint index'ini bul.
-        Tüm path yerine mevcut index çevresinde pencere tarar (stabil + hızlı).
-        """
         if not self.current_path:
             return 0
 
@@ -167,7 +238,6 @@ class OffboardControl(Node):
         curr_y = self.current_pos_enu[1]
 
         n = len(self.current_path)
-        # pencere
         i0 = max(0, self.path_index - CLOSEST_SEARCH_WINDOW)
         i1 = min(n - 1, self.path_index + CLOSEST_SEARCH_WINDOW)
 
@@ -186,18 +256,12 @@ class OffboardControl(Node):
         return best_i
 
     def _advance_path_index_if_reached(self):
-        """
-        Önce en yakın waypoint'e kilitlen, sonra çok yakındakileri geç.
-        Bu iki adım ping-pong'u ciddi azaltır.
-        """
         if not self.current_path:
             self.path_index = 0
             return
 
-        # 1) en yakın index'e kilitlen
         self.path_index = self._find_closest_index_nearby()
 
-        # 2) yakın waypoint'leri geç
         curr_x = self.current_pos_enu[0]
         curr_y = self.current_pos_enu[1]
 
@@ -210,10 +274,6 @@ class OffboardControl(Node):
                 break
 
     def _get_lookahead_along_path(self, lookahead_dist):
-        """
-        Kritik fix: lookahead noktası Öklid mesafesiyle değil,
-        path üzerinde ileri doğru biriktirilen mesafeyle seçilir.
-        """
         if not self.current_path:
             return None
 
@@ -223,7 +283,6 @@ class OffboardControl(Node):
 
         i = max(0, min(self.path_index, n - 1))
 
-        # i'den itibaren segment uzunluklarını topla
         acc = 0.0
         prev = self.current_path[i].pose.position
 
@@ -235,16 +294,9 @@ class OffboardControl(Node):
                 return cur
             prev = cur
 
-        # yol bitti: son noktayı ver
         return self.current_path[-1].pose.position
 
     def get_adaptive_lookahead_point(self):
-        """
-        Stabilite için:
-        - path_index en yakın waypoint'e kilitlenir
-        - lookahead noktası path üzerinde arc-length ile seçilir (ping-pong fix)
-        - hysteresis (viraj/düz mod zıplamasını keser)
-        """
         if not self.current_path:
             return None, 0.0
 
@@ -253,12 +305,10 @@ class OffboardControl(Node):
         curr_x = self.current_pos_enu[0]
         curr_y = self.current_pos_enu[1]
 
-        # 1) Uzak hedefi path üzerinde lookahead ile seç
         target_far = self._get_lookahead_along_path(MAX_LOOKAHEAD)
         if target_far is None:
             return None, 0.0
 
-        # 2) Uzak hedefin yaw error'u
         dx = target_far.x - curr_x
         dy = target_far.y - curr_y
         desired_yaw = math.atan2(dy, dx)
@@ -270,7 +320,6 @@ class OffboardControl(Node):
             )
         )
 
-        # 3) Hysteresis ile mod kararı
         if self.in_turn_mode:
             if yaw_error < TURN_OFF_THRESHOLD:
                 self.in_turn_mode = False
@@ -278,7 +327,6 @@ class OffboardControl(Node):
             if yaw_error > TURN_ON_THRESHOLD:
                 self.in_turn_mode = True
 
-        # 4) Virajdaysa yakın hedefi de path üzerinde seç
         if self.in_turn_mode:
             target_close = self._get_lookahead_along_path(MIN_LOOKAHEAD)
             final_target = target_close if target_close else target_far
@@ -292,7 +340,6 @@ class OffboardControl(Node):
         target_enu, yaw_error = self.get_adaptive_lookahead_point()
 
         if target_enu is not None:
-            # ENU -> NED
             target_north = target_enu.y
             target_east = target_enu.x
             target_down = self.mission_altitude
@@ -304,7 +351,6 @@ class OffboardControl(Node):
             delta_east = target_east - curr_east
             dist_to_target = math.sqrt(delta_north ** 2 + delta_east ** 2)
 
-            # --- SETPOINT SMOOTHING + STEP LIMIT ---
             raw_n = target_north
             raw_e = target_east
 
@@ -325,7 +371,6 @@ class OffboardControl(Node):
             msg.position = [self.sp_n, self.sp_e, target_down]
             msg.velocity = [float('nan'), float('nan'), float('nan')]
 
-            # --- YAW KONTROLÜ ---
             if dist_to_target > NEAR_TARGET_DIST:
                 desired_yaw_ned = math.atan2(delta_east, delta_north)
 
@@ -354,7 +399,7 @@ class OffboardControl(Node):
                 if hasattr(msg, "yaw_speed"):
                     msg.yaw_speed = 0.0
 
-            if self.offboard_setpoint_counter % 20 == 0:
+            if self.offboard_setpoint_counter % 20 == 0 and self.initialization_complete:
                 mode_str = "SHORT (Viraj)" if self.in_turn_mode else "LONG (Düz)"
                 self.get_logger().info(
                     f"Mode: {mode_str} | Dist: {dist_to_target:.2f}m | "

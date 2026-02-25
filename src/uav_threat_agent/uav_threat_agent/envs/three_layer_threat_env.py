@@ -314,14 +314,44 @@ class ThreatAgentEnv(gym.Env):
                     self.class_seen_counts[class_id] += 1
                 
                 # --- TARGET RISK HESABI ---
-                dist_score = 1.0 / (1.0 + np.exp(1.5 * (dist - 2.5)))
+                # ═══════════════════════════════════════════════════════════════
+                # YENİ: PERSON İÇİN ÖZEL DISTANCE SCORING
+                # ═══════════════════════════════════════════════════════════════
+                if class_id == 4:  # Person
+                    # Aggressive sigmoid: 3.5m threshold, 2.0 slope
+                    dist_score = 1.0 / (1.0 + np.exp(2.0 * (dist - 3.5)))
+                else:
+                    # Default sigmoid (Unknown, diğerleri)
+                    dist_score = 1.0 / (1.0 + np.exp(1.5 * (dist - 2.5)))
                 
+                # Speed score
                 speed_score = 0.0
                 if closing_speed > 0.1:
                     speed_score = np.clip(0.3 * closing_speed, 0.0, 0.8)
                 
-                raw_risk = np.clip(dist_score + speed_score, 0.0, 1.0)                
-                instant_target_risk = raw_risk * c_factor  # ← Artık doğru c_factor
+                raw_risk = np.clip(dist_score + speed_score, 0.0, 1.0)
+                
+                # ═══════════════════════════════════════════════════════════════
+                # YENİ: C_FACTOR DEĞERLERİ
+                # ═══════════════════════════════════════════════════════════════
+                if class_id == 0:  # Unknown
+                    if closing_speed > 0.3:
+                        c_factor = 0.8   # Hareket ediyor
+                    elif closing_speed > 0.1:
+                        c_factor = 0.4   # Yavaş hareket
+                    else:
+                        c_factor = 0.05  # Statik (duvar)
+                
+                elif class_id == 4:  # Person
+                    c_factor = 0.9   # ← 0.6'dan 0.9'a ARTIRILDI!
+                
+                else:
+                    c_factor = 0.0  # Drone/Bird/FixedWing
+                
+                instant_target_risk = raw_risk * c_factor
+                
+                # Temporal Smoothing (EMA)
+                target_risk = alpha * instant_target_risk + (1 - alpha) * prev_risk
                 
                 # Temporal Smoothing (EMA)
                 target_risk = alpha * instant_target_risk + (1 - alpha) * prev_risk
@@ -342,43 +372,73 @@ class ThreatAgentEnv(gym.Env):
                 detailed_threats.append(threat_info)
                 
                 # --- 1. ALIGNMENT REWARD ---
+                # ═══════════════════════════════════════════════════════════════════════════════
+# REWARD FUNCTION FIX - three_layer_threat_env.py içine yapıştır
+# ═══════════════════════════════════════════════════════════════════════════════
+# SORUN: Agent "her şeye 0 ver" stratejisi öğrendi (lazy agent)
+# ÇÖZÜM: 1) Critical Miss threshold düşür (0.5 → 0.25)
+#        2) Person detection için pozitif ödül ekle
+#        3) Confidence bonus artır
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# calculate_reward_and_info() içinde, alignment_reward hesaplandıktan sonra
+# aşağıdaki blokları DEĞİŞTİR:
+
+                # --- 1. ALIGNMENT REWARD ---
                 diff = abs(current_score - target_risk)
                 base_penalty = diff * 1.5
-                
-                # Polynomial Gap Penalty
                 penalty = base_penalty * (1 + (diff / 0.4) ** 2)
                 penalty = min(penalty, 2.5) 
-                
                 alignment_reward = 1.0 - penalty
                 total_reward += alignment_reward
                 
-                # --- FIX G: CRITICAL MISS PENALTY (Sessiz Ajan Fix) ---
-                # Eğer risk çok yüksek (>0.8) ama ajan uyuyorsa (<0.4), ekstra ceza!
-                if target_risk > 0.5 and current_score < 0.3:
-                    total_reward -= 1.5 # Çok ağır ceza, uyanması lazım.
+                # ═══════════════════════════════════════════════════════════════
+                # YENİ: CRITICAL MISS PENALTY (Düşük Threshold)
+                # ═══════════════════════════════════════════════════════════════
+                if target_risk > 0.25 and current_score < 0.2:  # ← 0.5 → 0.25
+                    # Gradient: risk yükseldikçe ceza artar
+                    miss_penalty = 2.5 * (target_risk / 0.6)  # Max risk 0.6 için normalize
+                    total_reward -= miss_penalty
 
-                # --- 2. CONFIDENCE BOOSTING (Drone vs Bird) ---
+                # ═══════════════════════════════════════════════════════════════
+                # YENİ: POSITIVE REINFORCEMENT (Person Detection Reward)
+                # ═══════════════════════════════════════════════════════════════
+                if class_id == 4:  # Person
+                    if current_score > 0.4:
+                        # Person'a yüksek skor vermek ÖDÜL kazandırır!
+                        detection_reward = 0.4 * current_score  # Max +0.4
+                        total_reward += detection_reward
+                
+                # ═══════════════════════════════════════════════════════════════
+                # YENİ: CONFIDENCE BOOSTING (Artırılmış)
+                # ═══════════════════════════════════════════════════════════════
                 confidence_bonus = 0.0
-                # if class_id == 1 and current_score > 0.8: # Drone + Yüksek Skor
-                #     confidence_bonus = 0.1
-                # elif class_id == 2 and current_score < 0.3: # Kuş + Düşük Skor
-                #     confidence_bonus = 0.05
-                # Maze için sadece Person confidence boost:
                 if class_id == 4 and current_score > 0.6:   # Person + Yüksek Skor
-                    confidence_bonus = 0.1
-                elif class_id == 0 and closing_speed < 0.1 and current_score < 0.1:  # Duvar + Düşük Skor
+                    confidence_bonus = 0.2  # ← 0.1'den 0.2'ye çıkarıldı
+                elif class_id == 0 and closing_speed < 0.1 and current_score < 0.1:  # Duvar
                     confidence_bonus = 0.05
                 
                 total_reward += confidence_bonus
                 
-                # --- FIX C: SMOOTHNESS FIX (Gecikmeli Ajan Fix) ---
+                # --- FIX C: SMOOTHNESS (değişiklik yok) ---
                 delta_score = abs(current_score - prev_score)
-                # Sadece 0.2 üstünü değil, her değişimi (0.03) ve büyükleri (0.1) cezalandır.
-                # Bu sayede ajan "0.19 artırarak kaçayım" diyemez.
                 smooth_penalty = 0.03 * delta_score + 0.1 * max(0, delta_score - 0.15)
                 total_reward -= smooth_penalty
                 
                 self.prev_target_risk[i] = target_risk
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ÖZET:
+# ═══════════════════════════════════════════════════════════════════════════════
+# 1. Critical Miss: target_risk > 0.25 (eskiden 0.5) → Person için tetiklenir
+# 2. Person Detection Reward: score > 0.4 olunca +0.4 ödül (YENİ!)
+# 3. Confidence Bonus: 0.1 → 0.2 (2 kat artırıldı)
+#
+# Bu değişikliklerle agent "her şeye 0" yerine Person'a yüksek skor vermeye
+# teşvik edilecek, çünkü:
+#   - 0 verdiğinde: Critical Miss cezası alacak (-2.5)
+#   - Yüksek skor verdiğinde: Detection reward (+0.4) + Confidence bonus (+0.2)
+# ═══════════════════════════════════════════════════════════════════════════════
                 
             else:
                 # --- FIX A: GHOST THREAT FIX ---

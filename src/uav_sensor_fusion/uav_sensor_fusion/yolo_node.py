@@ -35,7 +35,7 @@ class YoloNode(Node):
         frame = self.bridge.imgmsg_to_cv2(msg, "bgr8")
 
         # YOLO inference (resize otomatik)
-        results = self.model(frame, conf=0.25, verbose=False)
+        results = self.model(frame, conf=0.25, verbose=False, device='cuda')
         boxes = results[0].boxes
 
         # Annotated görüntü

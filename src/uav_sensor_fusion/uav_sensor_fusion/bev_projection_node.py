@@ -1,25 +1,9 @@
-"""
-BEV Projection Node v2 - Düzeltilmiş Versiyon (+ YOLO Projected Detections Publisher)
-
-Eklenenler:
-- YOLO bbox -> ray-plane -> ground point (odom) hesaplandıktan sonra
-  bu nokta base_link'e dönüştürülüp /yolo/projected_detections topic'ine yayınlanır.
-- Mesaj tipi: vision_msgs/Detection3DArray
-  Her Detection3D içinde:
-    - results[0].hypothesis.class_id  (YOLO class_id)
-    - results[0].hypothesis.score     (YOLO score)
-    - results[0].pose.pose.position   (base_link'te x_rel, y_rel, z=0)
-"""
-
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
 from sensor_msgs.msg import PointCloud2, Image, CameraInfo
-from vision_msgs.msg import Detection2DArray
-
-# ✅ NEW imports for projected detections
-from vision_msgs.msg import Detection3DArray, Detection3D, ObjectHypothesisWithPose
+from vision_msgs.msg import Detection2DArray, Detection3DArray, Detection3D, ObjectHypothesisWithPose
 
 from geometry_msgs.msg import PointStamped
 from cv_bridge import CvBridge
@@ -30,6 +14,7 @@ import numpy as np
 import cv2
 from tf2_ros import Buffer, TransformListener
 import tf2_geometry_msgs
+from scipy.spatial.transform import Rotation
 
 
 class BEVImageNodeV2(Node):
@@ -41,10 +26,10 @@ class BEVImageNodeV2(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # BEV Grid Parametreleri
-        self.grid_size = 600          # 600x600 piksel
-        self.res = 0.05               # 5 cm/piksel -> 30m x 30m alan
+        self.grid_size = 600
+        self.res = 80 / self.grid_size
 
-        # Kamera Intrinsics (Gazebo kamera modeli)
+        # Kamera Intrinsics
         self.fx = 539.9
         self.fy = 539.9
         self.cx = 640.0
@@ -59,7 +44,6 @@ class BEVImageNodeV2(Node):
             10
         )
 
-        # QoS for PX4 (şu an kullanılmıyor ama bırakıyorum)
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -91,10 +75,7 @@ class BEVImageNodeV2(Node):
             10
         )
 
-        # Publishers
         self.pub = self.create_publisher(Image, "/bev/image", 10)
-
-        # ✅ NEW publisher: YOLO projected detections in base_link
         self.pub_yolo_proj = self.create_publisher(
             Detection3DArray,
             "/yolo/projected_detections",
@@ -106,16 +87,15 @@ class BEVImageNodeV2(Node):
         self.latest_yolo = None
         self.latest_radar = None
 
-        # Drone pozisyonu (drone-relative BEV için)
+        # Drone pozisyonu
         self.drone_x = 0.0
         self.drone_y = 0.0
         self.drone_z = 0.0
 
-                # --- Timing / sync ---
-        self.max_age_sec = 0.5   # 0.3-0.8 arası deneyebilirsin
-        self.create_timer(0.1, self.process)  # 10 Hz sabit BEV üretimi
+        self.max_age_sec = 0.5
+        self.create_timer(0.1, self.process)
 
-        self.get_logger().info("BEV Node V2 Started - Drone-Relative BEV (+ projected detections)")
+        self.get_logger().info("BEV Node V2 Started - Adaptive Camera Pitch")
 
     # ==================== CALLBACKS ====================
     def camera_info_callback(self, msg):
@@ -130,7 +110,6 @@ class BEVImageNodeV2(Node):
 
     def yolo_callback(self, msg):
         self.latest_yolo = msg
-        # self.process()
 
     def radar_callback(self, msg):
         self.latest_radar = msg
@@ -152,7 +131,6 @@ class BEVImageNodeV2(Node):
         t_yolo  = self._stamp_to_sec(self.latest_yolo.header.stamp)
         t_radar = self._stamp_to_sec(self.latest_radar.header.stamp)
 
-        # Stale kontrol (sim_time açıkken clock da sim time olur)
         if (now_sec - t_lidar) > self.max_age_sec:
             self.get_logger().warn(f"LiDAR stale: {now_sec - t_lidar:.2f}s", throttle_duration_sec=1)
             return
@@ -163,7 +141,7 @@ class BEVImageNodeV2(Node):
             self.get_logger().warn(f"Radar stale: {now_sec - t_radar:.2f}s", throttle_duration_sec=1)
             return
 
-        # ===== DRONE POZİSYONUNU AL (DRONE-RELATIVE BEV İÇİN) =====
+        # Drone pozisyonu
         try:
             tf_base_odom = self.tf_buffer.lookup_transform(
                 "odom",
@@ -179,29 +157,30 @@ class BEVImageNodeV2(Node):
             self.drone_y = 0.0
             self.drone_z = 0.0
 
-        # Boş BEV görüntüsü oluştur (siyah)
+        # Boş BEV
         bev = np.zeros((self.grid_size, self.grid_size, 3), dtype=np.uint8)
         lidar_layer = np.zeros((self.grid_size, self.grid_size), dtype=np.uint8)
         radar_layer = np.zeros((self.grid_size, self.grid_size), dtype=np.uint8)
         yolo_layer  = np.zeros((self.grid_size, self.grid_size), dtype=np.uint8)
 
-        # 1. LiDAR (BEYAZ)
+        # 1. LiDAR
         self.draw_lidar(bev, lidar_layer)
 
-        # 2. Radar (YEŞİL)
+        # 2. Radar
         self.draw_radar(bev, radar_layer)
 
-        # 3. YOLO Projeksiyon (KIRMIZI) + ✅ publish projected detections
+        # 3. YOLO (FIX: Adaptive)
         self.draw_yolo_projections(bev, yolo_layer)
 
-        # 4. Drone merkezi (MAVİ)
+        # 4. Drone
         cv2.circle(bev, (self.grid_size // 2, self.grid_size // 2), 4, (255, 0, 0), -1)
 
-        # 5. Y ekseni düzeltmesi ve yayınlama
+        # 5. Flip & Publish
         bev = np.flipud(bev)
         lidar_layer = np.flipud(lidar_layer)
         radar_layer = np.flipud(radar_layer)
         yolo_layer  = np.flipud(yolo_layer)
+        
         self.pub.publish(self.bridge.cv2_to_imgmsg(bev, encoding="bgr8"))
         self.pub_lidar.publish(self.bridge.cv2_to_imgmsg(lidar_layer, encoding="mono8"))
         self.pub_radar.publish(self.bridge.cv2_to_imgmsg(radar_layer, encoding="mono8"))
@@ -275,52 +254,82 @@ class BEVImageNodeV2(Node):
         except Exception as e:
             self.get_logger().debug(f"Radar TF error: {e}")
 
-    # ==================== YOLO PROJECTION + PUBLISH ====================
+    # ==================== YOLO PROJECTION (FIXED) ====================
     def draw_yolo_projections(self, bev, yolo_layer):
         if self.latest_yolo is None:
             return
 
-        # Timestamp (TF doğruluğu için)
         timestamp = self.latest_yolo.header.stamp
 
-        # camera_link -> odom TF (o timestamp)
         try:
             tf_cam_odom = self.tf_buffer.lookup_transform(
-                "odom",
-                "camera_link",
-                timestamp
+                "odom", "camera_link", rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=0.05)
             )
         except Exception as e:
-            self.get_logger().warn(f"TF Lookup failed (camera_link->odom @stamp). Using latest. Error: {e}")
-            try:
-                tf_cam_odom = self.tf_buffer.lookup_transform("odom", "camera_link", rclpy.time.Time())
-            except Exception as e2:
-                self.get_logger().warn(f"TF Lookup failed (latest camera_link->odom): {e2}")
-                return
+            self.get_logger().warn(f"TF failed: {e}", throttle_duration_sec=1.0)
+            return
 
         cam_x = tf_cam_odom.transform.translation.x
         cam_y = tf_cam_odom.transform.translation.y
         cam_z = tf_cam_odom.transform.translation.z
 
-        IS_ON_GROUND = cam_z < 0.5
-        VIRTUAL_HEIGHT = 0.24
+        # ✅ KAMERA PITCH AÇISINI AL
+        q = tf_cam_odom.transform.rotation
+        rot = Rotation.from_quat([q.x, q.y, q.z, q.w])
+        euler = rot.as_euler('xyz', degrees=True)
+        pitch = euler[1]  # Y eksenindeki rotasyon (pitch)
 
-        if IS_ON_GROUND:
-            calc_h = VIRTUAL_HEIGHT
-        else:
-            calc_h = cam_z
+        # ✅ PITCH'E GÖRE ADAPTIVE PARAMETRELER
+        # Negatif pitch = aşağı bakıyor
+        # Pozitif pitch = yukarı bakıyor
+        # 0 pitch = yatay
+        
+        if cam_z < 0.5:  # YERDE
+            # Yataya yakın kamera, minimal filtre
+            min_pitch_deg = -5.0  # En az 5° aşağı bakmalı (esnek)
+            max_proj_dist = 15.0
+            tolerance = 0.1  # Geniş tolerans
+            
+        elif cam_z < 3.0:  # DÜŞÜK İRTİFA
+            min_pitch_deg = -10.0  # En az 10° aşağı
+            max_proj_dist = cam_z * 5.0
+            tolerance = 0.05
+            
+        else:  # YÜKSEK İRTİFA
+            min_pitch_deg = -20.0  # En az 20° aşağı
+            max_proj_dist = cam_z * 6.0
+            tolerance = 0.02
 
-        # ✅ NEW: projected detections message
+        # ✅ DEBUG: Kamera durumunu logla
+        self.get_logger().info(
+            f"Camera: alt={cam_z:.2f}m, pitch={pitch:.1f}°, "
+            f"min_pitch={min_pitch_deg:.1f}°, max_dist={max_proj_dist:.1f}m",
+            throttle_duration_sec=2.0
+        )
+
+        # ✅ PITCH KONTROLÜ
+        if pitch > min_pitch_deg:
+            self.get_logger().warn(
+                f"Camera not looking down enough! pitch={pitch:.1f}° > {min_pitch_deg:.1f}°",
+                throttle_duration_sec=2.0
+            )
+            # Devam et ama daha toleranslı ol
+            tolerance *= 2.0
+
         proj_array = Detection3DArray()
         proj_array.header.stamp = timestamp
-        proj_array.header.frame_id = "base_link"  # we will publish base_link positions
+        proj_array.header.frame_id = "base_link"
+
+        debug_count = 0
+        debug_rejected = {"pitch": 0, "dz": 0, "t": 0, "dist": 0, "bounds": 0}
 
         for det in self.latest_yolo.detections:
-            # Bottom-center of bbox
+            # Bbox alt kenarı
             u = det.bbox.center.position.x
             v = det.bbox.center.position.y + (det.bbox.size_y / 2.0)
 
-            # Normalize (pinhole)
+            # Normalized ray direction (camera frame)
             ray_x_norm = (u - self.cx) / self.fx
             ray_y_norm = (v - self.cy) / self.fy
 
@@ -332,31 +341,52 @@ class BEVImageNodeV2(Node):
             ray_pt.point.y = -ray_x_norm
             ray_pt.point.z = -ray_y_norm
 
-            # Transform ray point to odom
+            # Transform to odom
             try:
                 ray_odom = tf2_geometry_msgs.do_transform_point(ray_pt, tf_cam_odom)
             except Exception:
                 continue
 
+            # Ray direction
             dx = ray_odom.point.x - cam_x
             dy = ray_odom.point.y - cam_y
             dz = ray_odom.point.z - cam_z
 
-            # Intersect with ground (Z=0)
-            if dz >= -0.001:
+            # ✅ ESNEK DZ KONTROLÜ
+            # dz < 0 olmalı (aşağı bakıyor)
+            # Ama tolerance kadar esneklik ver
+            if dz > tolerance:
+                debug_rejected["dz"] += 1
                 continue
 
-            t = -calc_h / dz
-            if t <= 0 or t > 100.0:
+            # Zemine kesişme parametresi
+            # z = cam_z + t * dz = 0  →  t = -cam_z / dz
+            if abs(dz) < 1e-6:  # Çok yatay ray
+                debug_rejected["dz"] += 1
                 continue
 
+            t = -cam_z / dz
+
+            # t pozitif ve makul olmalı
+            if t <= 0 or t > max_proj_dist:
+                debug_rejected["t"] += 1
+                continue
+
+            # Zemin noktası
             ground_x = cam_x + t * dx
             ground_y = cam_y + t * dy
 
-            # ----- DRONE-RELATIVE DRAW (for BEV image) -----
+            # Drone-relative
             rel_x = ground_x - self.drone_x
             rel_y = ground_y - self.drone_y
+            rel_dist = float(np.hypot(rel_x, rel_y))
 
+            # Distance check
+            if rel_dist > max_proj_dist:
+                debug_rejected["dist"] += 1
+                continue
+
+            # BEV grid
             bx = int(rel_x / self.res + self.grid_size / 2)
             by = int(rel_y / self.res + self.grid_size / 2)
 
@@ -364,8 +394,12 @@ class BEVImageNodeV2(Node):
                 cv2.circle(bev, (bx, by), 6, (0, 0, 255), -1)
                 cv2.circle(bev, (bx, by), 7, (255, 255, 255), 1)
                 cv2.circle(yolo_layer, (bx, by), 7, 255, -1)
+                debug_count += 1
+            else:
+                debug_rejected["bounds"] += 1
+                continue
 
-            # ----- ✅ PUBLISH: convert ground point (odom) -> base_link -----
+            # ✅ 3D Detection message
             gp = PointStamped()
             gp.header.stamp = timestamp
             gp.header.frame_id = "odom"
@@ -375,40 +409,44 @@ class BEVImageNodeV2(Node):
 
             try:
                 tf_base_odom_at_t = self.tf_buffer.lookup_transform(
-                    "base_link",  # target
-                    "odom",       # source
-                    timestamp
+                    "base_link", "odom", rclpy.time.Time()
                 )
                 gp_base = tf2_geometry_msgs.do_transform_point(gp, tf_base_odom_at_t)
-            except Exception as e:
-                self.get_logger().warn(f"YOLO ground->base_link TF failed: {e}")
+            except Exception:
                 continue
 
-            # Build Detection3D
             det3 = Detection3D()
             det3.header.stamp = timestamp
             det3.header.frame_id = "base_link"
-
+            
             hypo = ObjectHypothesisWithPose()
-
-            # Class + score from YOLO Detection2D
             if len(det.results) > 0:
                 hypo.hypothesis.class_id = det.results[0].hypothesis.class_id
                 hypo.hypothesis.score = float(det.results[0].hypothesis.score)
             else:
                 hypo.hypothesis.class_id = "-1"
                 hypo.hypothesis.score = 0.0
-
-            # Put projected point into pose
+                
             hypo.pose.pose.position.x = float(gp_base.point.x)
             hypo.pose.pose.position.y = float(gp_base.point.y)
             hypo.pose.pose.position.z = 0.0
             hypo.pose.pose.orientation.w = 1.0
-
+            
             det3.results.append(hypo)
             proj_array.detections.append(det3)
 
-        # ✅ publish if any
+        # ✅ DETAILED DEBUG LOG
+        total_dets = len(self.latest_yolo.detections)
+        if total_dets > 0:
+            self.get_logger().info(
+                f"YOLO: total={total_dets} | projected={debug_count} | "
+                f"rejected: pitch={debug_rejected['pitch']}, dz={debug_rejected['dz']}, "
+                f"t={debug_rejected['t']}, dist={debug_rejected['dist']}, "
+                f"bounds={debug_rejected['bounds']}",
+                throttle_duration_sec=1.0
+            )
+
+        # Publish
         if len(proj_array.detections) > 0:
             self.pub_yolo_proj.publish(proj_array)
 
