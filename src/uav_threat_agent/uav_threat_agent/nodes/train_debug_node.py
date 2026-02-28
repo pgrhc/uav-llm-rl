@@ -361,18 +361,18 @@ def main(args=None):
         "env_id": "ThreatAgent-v11",
         "algo": "PPO",
         "hyperparameters": {
-            "learning_rate": 1e-4,
-            "n_steps": 2048,
-            "batch_size": 512,
+            "learning_rate": 5e-5,
+            "n_steps": 4096,
+            "batch_size": 1024,
             "n_epochs": 10,
-            "gamma": 0.99,
+            "gamma": 0.995,
             "gae_lambda": 0.95,
             "clip_range": 0.15,
             "ent_coef": 0.08,
         },
         "vec_normalize": {
             "norm_obs": True,
-            "norm_reward": True,
+            "norm_reward": False,
             "clip_obs": 10.0,
             "clip_reward": 5.0,
         },
@@ -391,7 +391,7 @@ def main(args=None):
         return env
 
     env = DummyVecEnv([make_env])
-    env = VecNormalize(env, norm_obs=True, norm_reward=True,
+    env = VecNormalize(env, norm_obs=True, norm_reward=False,
                        clip_obs=10.0, clip_reward=5.0)
     _env = env
 
@@ -399,13 +399,14 @@ def main(args=None):
     model = PPO(
         "MultiInputPolicy",
         env,
+        device="cuda",
         verbose=1,
         tensorboard_log=log_dir,
-        learning_rate=1e-4,
-        n_steps=2048,
-        batch_size=512,
+        learning_rate=5e-5,
+        n_steps=4096,
+        batch_size=1024,
         n_epochs=10,
-        gamma=0.99,
+        gamma=0.995,
         gae_lambda=0.95,
         clip_range=0.15,
         ent_coef=0.08,

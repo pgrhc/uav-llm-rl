@@ -29,7 +29,7 @@ def main(args=None):
     # 2. MODELİ YÜKLE
     # Yeni eğiteceğin model buraya düşecek (isim değişebilir, kontrol et)
     # Örn: models/PPO-1/10240.zip gibi
-    model_path = "/home/ubuntu/Desktop/ros2_env/models/PPO-11-20260225-071128/ppo_threat_40960_steps.zip" 
+    model_path = "/home/ubuntu/Desktop/ros2_env/models/PPO-11-20260225-071128_resume_20260225-090502/ppo_threat_45056_steps.zip" 
     
     if not os.path.exists(model_path) and not os.path.exists(model_path + ".zip"):
         print(f"HATA: Model dosyası bulunamadı: {model_path}")

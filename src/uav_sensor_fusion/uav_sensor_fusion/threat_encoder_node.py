@@ -103,7 +103,7 @@ class ThreatEncoderNode(Node):
         self.gate_dist = 2.0
         self.cluster_thr = 0.6
         self.track_match_dist = 2.0
-        self.max_miss = 10
+        self.max_miss = 3
         self.K = 5
         self.token_len = 17
 
@@ -351,13 +351,26 @@ class ThreatEncoderNode(Node):
     def tick(self):
         if self.latest_yolo is None or self.latest_radar is None:
             return
+        
+        
+        yolo_msg = self.latest_yolo
+        radar_msg = self.latest_radar
+        self.latest_yolo = None 
+        self.latest_radar = None  
 
-        yolo_t = self._stamp_to_sec(self.latest_yolo.header.stamp)
-        radar_t = self._stamp_to_sec(self.latest_radar.header.stamp)
+        yolo_t = self._stamp_to_sec(yolo_msg.header.stamp)
+        radar_t = self._stamp_to_sec(radar_msg.header.stamp)
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if (now - yolo_t) > 1.0:
+            self.get_logger().warn(f"YOLO message too old: {now - yolo_t:.2f}s")
+            return
+        if (now - radar_t) > 1.0:
+            self.get_logger().warn(f"Radar message too old: {now - radar_t:.2f}s")
+            return
 
         # ── YOLO Processing ──────────────────────────────────────────────
         yolo_list = []
-        for d in self.latest_yolo.detections:
+        for d in yolo_msg.detections:
             if len(d.results) == 0:
                 continue
             hypo = d.results[0]

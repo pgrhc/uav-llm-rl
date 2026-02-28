@@ -32,7 +32,7 @@ class ThreatAgentEnv(gym.Env):
 
         # --- 2. OBSERVATION SPACE ---
         self.observation_space = spaces.Dict({
-            "bev_image": spaces.Box(low=0.0, high=1.0, shape=(3, 64, 64), dtype=np.float32),
+            "bev_image": spaces.Box(low=0.0, high=1.0, shape=(3, 128, 128), dtype=np.float32),
             "state_vector": spaces.Box(low=-np.inf, high=np.inf, shape=(88,), dtype=np.float32)
         })
 
@@ -40,7 +40,7 @@ class ThreatAgentEnv(gym.Env):
         self.prev_action = np.zeros(self.K, dtype=np.float32)
         self.prev_target_risk = np.zeros(self.K, dtype=np.float32) 
         self.class_seen_counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
-        self.shuffle_prob = 0.1
+        self.shuffle_prob = 0.7
 
         # --- 3. ROS 2 BAĞLANTILARI ---
         if not rclpy.ok():
@@ -54,7 +54,7 @@ class ThreatAgentEnv(gym.Env):
         self.br = CvBridge()
         
         # Veri Saklama
-        self.bev_stack = np.zeros((3, 64, 64), dtype=np.float32)
+        self.bev_stack = np.zeros((3, 128, 128), dtype=np.float32)
         self.latest_vector = np.zeros((88,), dtype=np.float32)
         
         # Flagler
@@ -162,10 +162,10 @@ class ThreatAgentEnv(gym.Env):
     def _process_image(self, msg):
         try:
             cv_img = self.br.imgmsg_to_cv2(msg, desired_encoding='mono8')
-            cv_resized = cv2.resize(cv_img, (64, 64))
+            cv_resized = cv2.resize(cv_img, (128, 128))
             return cv_resized.astype(np.float32) / 255.0
         except Exception:
-            return np.zeros((64, 64), dtype=np.float32)
+            return np.zeros((128, 128), dtype=np.float32)
 
     def lidar_callback(self, msg):
         img = self._process_image(msg)
