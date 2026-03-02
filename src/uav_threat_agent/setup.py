@@ -27,6 +27,7 @@ setup(
             'train = uav_threat_agent.nodes.train_debug_node:main',
             'inference = uav_threat_agent.nodes.threat_agent_node:main',
             'pretrained_train = uav_threat_agent.nodes.pretrained_model_node:main',
+            "curriculum_train = uav_threat_agent.nodes.curriculum_training:main",
         ],
     },
 )

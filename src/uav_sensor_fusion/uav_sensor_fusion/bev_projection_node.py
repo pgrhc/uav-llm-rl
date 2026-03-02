@@ -300,7 +300,7 @@ class BEVImageNodeV2(Node):
             min_pitch_deg = -20.0  # En az 20° aşağı
             max_proj_dist = cam_z * 6.0
             tolerance = 0.02
-
+        max_proj_dist = min(max_proj_dist, 40.0)
         # ✅ DEBUG: Kamera durumunu logla
         self.get_logger().info(
             f"Camera: alt={cam_z:.2f}m, pitch={pitch:.1f}°, "
