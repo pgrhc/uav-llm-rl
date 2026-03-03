@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/ubuntu/Desktop/ros2_env/bin/python3
 import rclpy
 from rclpy.node import Node
 
@@ -16,7 +16,7 @@ from collections import deque
 from fusion_msgs.msg import RadarPoints
 from nav_msgs.msg import Odometry
 import math
-
+from sklearn.cluster import DBSCAN
 
 # ══════════════════════════════════════════════════════════════════════════════
 # YOLO → Environment Class Mapping
@@ -58,18 +58,18 @@ class Track:
         pos = np.array(pos_xy, dtype=np.float32)
         dt = (t_sec - self.last_t)
 
-        if dt < 0.01 or dt > 1.0:
-            self.vel *= 0.9
+        if dt < 0.01 or dt > 0.5:
+            self.vel *= 0.95
         else:
             dp = pos - self.last_pos
             dist_moved = np.linalg.norm(dp)
 
-            if dist_moved < 0.25:
-                self.vel[:] = 0.0
+            if dist_moved < 0.01:
+                self.vel[:] *= 0.8
             else:
                 v_inst = dp / dt
-                if np.linalg.norm(v_inst) < 15.0:
-                    self.vel = 0.9 * self.vel + 0.1 * v_inst
+                alpha = 0.3 if dist_moved > 0.1 else 0.15  # Adaptive
+                self.vel = (1 - alpha) * self.vel + alpha * v_inst
 
         self.last_pos = pos
         self.pos = pos
@@ -103,7 +103,7 @@ class ThreatEncoderNode(Node):
         self.gate_dist = 2.0
         self.cluster_thr = 0.6
         self.track_match_dist = 2.0
-        self.max_miss = 3
+        self.max_miss = 15
         self.K = 5
         self.token_len = 17
 
@@ -151,44 +151,61 @@ class ThreatEncoderNode(Node):
         return float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
     def _cluster_radar(self, radar_xyi):
+        """
+        DBSCAN-based radar clustering.
+        Input : radar_xyi = [(x, y, intensity), ...] in base_link
+        Output: [{"pos": (cx, cy), "intensity": mean_inten, "radar_conf": conf}, ...]
+        """
+
         if len(radar_xyi) == 0:
             return []
 
         pts = np.array([[p[0], p[1]] for p in radar_xyi], dtype=np.float32)
         intens = np.array([p[2] for p in radar_xyi], dtype=np.float32)
 
-        used = np.zeros(len(pts), dtype=bool)
+        # --- DBSCAN params ---
+        # eps: meter cinsinden komşuluk yarıçapı
+        # min_samples: cluster sayılması için min nokta
+        eps = float(getattr(self, "dbscan_eps", 0.6))          # default 0.6m
+        min_samples = int(getattr(self, "dbscan_min_samples", 4))  # default 4
+
+        # DBSCAN: label = -1 => noise
+        labels = DBSCAN(eps=eps, min_samples=min_samples).fit_predict(pts)
+
         clusters = []
+        unique_labels = [lb for lb in np.unique(labels) if lb != -1]  # exclude noise
 
-        for i in range(len(pts)):
-            if used[i]:
+        if len(unique_labels) == 0:
+            return []
+
+        # intensity -> confidence normalize (robust)
+        # Not: intensity ölçeği bilinmiyorsa clip(inten,0,1) kötü olur.
+        # Burada mevcut frame içindeki percentiles ile normalize ediyoruz.
+        p10 = float(np.percentile(intens, 10))
+        p90 = float(np.percentile(intens, 90))
+        denom = (p90 - p10) if (p90 - p10) > 1e-6 else 1.0
+
+        for lb in unique_labels:
+            idx = np.where(labels == lb)[0]
+            if idx.size == 0:
                 continue
-            group = [i]
-            used[i] = True
-            changed = True
-            while changed:
-                changed = False
-                for j in range(len(pts)):
-                    if used[j]:
-                        continue
-                    d = np.min(np.linalg.norm(pts[group] - pts[j], axis=1))
-                    if d < self.cluster_thr:
-                        used[j] = True
-                        group.append(j)
-                        changed = True
 
-            c = pts[group].mean(axis=0)
-            inten = float(intens[group].mean())
-            radar_conf = float(np.clip(inten, 0.0, 1.0))
+            c = pts[idx].mean(axis=0)
+            inten_mean = float(intens[idx].mean())
+
+            # Percentile-based normalization -> [0,1]
+            radar_conf = float(np.clip((inten_mean - p10) / denom, 0.0, 1.0))
 
             clusters.append({
                 "pos": (float(c[0]), float(c[1])),
-                "intensity": inten,
-                "radar_conf": radar_conf
+                "intensity": inten_mean,
+                "radar_conf": radar_conf,
+                # debug için istersen:
+                # "n": int(idx.size),
             })
 
-        return clusters
-
+        return clusters    
+    
     def _associate_yolo_radar(self, yolo_list, radar_clusters):
         matches = []
         used_r = set()
@@ -216,15 +233,29 @@ class ThreatEncoderNode(Node):
 
         return matches
 
-    def _find_nearest_track(self, pos_xy, max_d):
+    def _find_nearest_track(self, pos_xy, max_d, dt_since_last=0.1):
         best_id = None
         best_d = 1e9
         p = np.array(pos_xy, dtype=np.float32)
+        
         for tid, tr in self.tracks.items():
-            d = float(np.linalg.norm(tr.pos - p))
-            if d < best_d and d < max_d:
-                best_d = d
+            # ✅ VELOCITY PREDICTION
+            predicted_pos = tr.pos + tr.vel * dt_since_last
+            
+            # ✅ MAHALANOBIS-LIKE DISTANCE
+            # Position distance
+            d_pos = float(np.linalg.norm(predicted_pos - p))
+            
+            # Velocity consistency (eğer measurement'ta velocity varsa)
+            # d_vel = ... (opsiyonel)
+            
+            # Combined distance
+            d_total = d_pos  # + weight * d_vel
+            
+            if d_total < best_d and d_total < max_d:
+                best_d = d_total
                 best_id = tid
+        
         return best_id
 
     def _update_tracks(self, matches, yolo_t: float, radar_t: float):
@@ -301,7 +332,7 @@ class ThreatEncoderNode(Node):
 
         if r > 1e-3:
             closing = float(-(x * vx + y * vy) / r)
-            if abs(closing) < 0.2:  # Noise gate
+            if abs(closing) < 0.05:  # Noise gate
                 closing = 0.0
             sn = float(y / r)
             cs = float(x / r)
@@ -345,119 +376,159 @@ class ThreatEncoderNode(Node):
         else:                   # Drone/Bird/FixedWing
             cw = 0.2
 
-        score = (1.0 / (r + 0.5)) + max(0.0, closing) + 0.2 * conf + 0.3 * cw
+        score = 0.4 * (2.0 / (r + 0.5)) + 0.3 * max(0.0, closing) + 0.2 * conf + 0.1 * cw
         return float(score)
 
-    def tick(self):
-        if self.latest_yolo is None or self.latest_radar is None:
-            return
-        
-        
-        yolo_msg = self.latest_yolo
-        radar_msg = self.latest_radar
-        self.latest_yolo = None 
-        self.latest_radar = None  
-
-        yolo_t = self._stamp_to_sec(yolo_msg.header.stamp)
-        radar_t = self._stamp_to_sec(radar_msg.header.stamp)
-        now = self.get_clock().now().nanoseconds * 1e-9
-        if (now - yolo_t) > 1.0:
-            self.get_logger().warn(f"YOLO message too old: {now - yolo_t:.2f}s")
-            return
-        if (now - radar_t) > 1.0:
-            self.get_logger().warn(f"Radar message too old: {now - radar_t:.2f}s")
-            return
-
-        # ── YOLO Processing ──────────────────────────────────────────────
-        yolo_list = []
-        for d in yolo_msg.detections:
-            if len(d.results) == 0:
-                continue
-            hypo = d.results[0]
-            x = float(hypo.pose.pose.position.x)
-            y = float(hypo.pose.pose.position.y)
-
-            # ═══ CLASS MAPPING FIX ═══════════════════════════════════════
-            yolo_class_str = str(hypo.hypothesis.class_id)
-            env_class_id = YOLO_TO_ENV_CLASS.get(yolo_class_str, 0)  # Default: Unknown
-            # ═════════════════════════════════════════════════════════════
-
-            yolo_list.append({
-                "pos": (x, y),
-                "class_id": env_class_id,  # ← Environment-compatible class ID
-                "score": float(hypo.hypothesis.score)
-            })
-
-        # ── Radar Processing ─────────────────────────────────────────────
-        radar_xyi = []
-        r_stamp = self.latest_radar.header.stamp
-        radar_frame = self.latest_radar.header.frame_id or self.radar_frame_default
-
-        tf_ok = True
-        try:
-            tf = self.tf_buffer.lookup_transform(
-                self.base_frame, radar_frame,
-                rclpy.time.Time.from_msg(r_stamp)
-            )
-        except Exception:
-            tf_ok = False
-            tf = None
-
-        for rp in self.latest_radar.points:
-            x = float(rp.x)
-            y = float(rp.y)
-            z = float(rp.z)
-            inten = float(getattr(rp, "intensity", 0.0))
-
-            if tf_ok:
-                ps = PointStamped()
-                ps.header.stamp = r_stamp
-                ps.header.frame_id = radar_frame
-                ps.point.x = x
-                ps.point.y = y
-                ps.point.z = z
-                try:
-                    out = tf2_geometry_msgs.do_transform_point(ps, tf)
-                    xb, yb = float(out.point.x), float(out.point.y)
-                except Exception:
-                    continue
-            else:
-                xb, yb = x, y
-
-            radar_xyi.append((xb, yb, inten))
-
-        radar_clusters = self._cluster_radar(radar_xyi)
-        matches = self._associate_yolo_radar(yolo_list, radar_clusters)
-        self._update_tracks(matches, yolo_t, radar_t)
-
-        # ── Top-K Selection ──────────────────────────────────────────────
-        scored = []
-        for tid, tr in self.tracks.items():
-            s = self._pre_score(tr)
-            token, _, _ = self._tokenize(tr)
-            scored.append((s, tid, token, tr))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        topk = scored[: self.K]
-
-        # ── Build state_vec ──────────────────────────────────────────────
+    def _publish_empty(self, reason="NO_FRESH_SENSORS"):
         yaw_sin = math.sin(self.uav_yaw)
         yaw_cos = math.cos(self.uav_yaw)
         max_speed = 5.0
         speed_norm = float(np.clip(self.uav_speed / max_speed, 0.0, 1.0))
 
-        vec = [speed_norm, yaw_sin, yaw_cos]  # UAV state (3 values)
-
-        for i in range(self.K):
-            if i < len(topk):
-                vec.extend(topk[i][2])  # 17 values per object
-            else:
-                vec.extend([0.0] * self.token_len)
+        vec = [speed_norm, yaw_sin, yaw_cos]
+        vec.extend([0.0] * (self.K * self.token_len))  # 85 zeros
 
         msg = Float32MultiArray()
         msg.data = vec
         self.pub_state.publish(msg)
 
-        # ── Debug Output ─────────────────────────────────────────────────
+        dbg = String()
+        dbg.data = reason
+        self.pub_debug.publish(dbg)
+
+
+    def tick(self):
+        # 1) Mesajları al
+        radar_msg = self.latest_radar
+        yolo_msg  = self.latest_yolo
+
+        # 2) Consume et
+        self.latest_radar = None
+        self.latest_yolo  = None
+
+        # 3) Freshness kontrolü
+        now_sec = self.get_clock().now().nanoseconds * 1e-9
+
+        radar_fresh = False
+        yolo_fresh  = False
+
+        radar_t = None
+        yolo_t  = None
+
+        if radar_msg is not None:
+            radar_t = self._stamp_to_sec(radar_msg.header.stamp)
+            radar_fresh = (now_sec - radar_t) <= 2.0
+            if not radar_fresh:
+                radar_msg = None  # radar stale -> devre dışı
+
+        if yolo_msg is not None:
+            yolo_t = self._stamp_to_sec(yolo_msg.header.stamp)
+            yolo_fresh = (now_sec - yolo_t) <= 2.0
+            if not yolo_fresh:
+                yolo_msg = None  # yolo stale -> devre dışı
+
+        # 4) Hiç fresh sensör yoksa: EMPTY publish
+        if radar_msg is None and yolo_msg is None:
+            self.tracks.clear()  # önerilir: eski track hayalet olmasın
+            self._publish_empty("NO_FRESH_RADAR_AND_YOLO")
+            return
+
+        # 5) Timestamp fallback (track update için)
+        # radar yoksa radar_t'yi yolo_t'ye eşitle, yolo yoksa yolo_t'yi radar_t'ye eşitle
+        if radar_t is None:
+            radar_t = yolo_t
+        if yolo_t is None:
+            yolo_t = radar_t
+
+        # 6) YOLO list
+        yolo_list = []
+        if yolo_msg is not None:
+            for d in yolo_msg.detections:
+                if len(d.results) == 0:
+                    continue
+                hypo = d.results[0]
+                yolo_class_str = str(hypo.hypothesis.class_id)
+                env_class_id = YOLO_TO_ENV_CLASS.get(yolo_class_str, 0)
+                yolo_list.append({
+                    "pos": (float(hypo.pose.pose.position.x), float(hypo.pose.pose.position.y)),
+                    "class_id": env_class_id,
+                    "score": float(hypo.hypothesis.score)
+                })
+
+        # 7) Radar clusters (radar yoksa boş)
+        radar_clusters = []
+        if radar_msg is not None:
+            radar_xyi = []
+            r_stamp = radar_msg.header.stamp
+            radar_frame = radar_msg.header.frame_id or self.radar_frame_default
+
+            tf_ok = True
+            try:
+                tf = self.tf_buffer.lookup_transform(
+                    self.base_frame,
+                    radar_frame,
+                    rclpy.time.Time.from_msg(r_stamp)
+                )
+            except Exception as e:
+                self.get_logger().warn(f"TF dönüşümü başarısız: {str(e)}")
+                tf_ok = False
+
+            for rp in radar_msg.points:
+                x, y, z = float(rp.x), float(rp.y), float(rp.z)
+                inten = float(getattr(rp, "intensity", 0.0))
+
+                if tf_ok:
+                    ps = PointStamped()
+                    ps.header.stamp = r_stamp
+                    ps.header.frame_id = radar_frame
+                    ps.point.x, ps.point.y, ps.point.z = x, y, z
+                    try:
+                        out = tf2_geometry_msgs.do_transform_point(ps, tf)
+                        xb, yb = float(out.point.x), float(out.point.y)
+                    except Exception:
+                        continue
+                else:
+                    xb, yb = x, y
+
+                radar_xyi.append((xb, yb, inten))
+
+            radar_clusters = self._cluster_radar(radar_xyi)
+
+        # Buradan sonrası aynı:
+        matches = self._associate_yolo_radar(yolo_list, radar_clusters)
+        self._update_tracks(matches, yolo_t, radar_t)
+
+        #... (TopK, state publish, debug publish)
+
+        # 8. En Önemli K Nesneyi (Top-K) Seç
+        scored = []
+        for tid, tr in self.tracks.items():
+            s = self._pre_score(tr)
+            token, _, _ = self._tokenize(tr)
+            scored.append((s, tid, token, tr))
+        
+        scored.sort(key=lambda x: x[0], reverse=True)
+        topk = scored[: self.K]
+
+        # 9. Durum Vektörünü (State Vector) Oluştur ve Yayınla
+        yaw_sin = math.sin(self.uav_yaw)
+        yaw_cos = math.cos(self.uav_yaw)
+        max_speed = 5.0
+        speed_norm = float(np.clip(self.uav_speed / max_speed, 0.0, 1.0))
+
+        vec = [speed_norm, yaw_sin, yaw_cos] # İHA durumu
+
+        for i in range(self.K):
+            if i < len(topk):
+                vec.extend(topk[i][2]) # Nesne tokeni (17 değer)
+            else:
+                vec.extend([0.0] * self.token_len) # Boş slotları doldur
+
+        msg = Float32MultiArray()
+        msg.data = vec
+        self.pub_state.publish(msg)
+
+        # 10. Debug Çıktısı
         parts = []
         class_names = {0: "Unknown", 1: "Drone", 2: "Bird", 3: "FixedWing", 4: "Person"}
         for s, tid, token, tr in topk:
@@ -471,10 +542,10 @@ class ThreatEncoderNode(Node):
                 f"vel=({tr.vel[0]:.2f},{tr.vel[1]:.2f}) "
                 f"closing={closing:.2f} conf={conf:.2f}"
             )
+        
         dbg = String()
-        dbg.data = " | ".join(parts) if parts else "no_tracks"
+        dbg.data = " | ".join(parts) if parts else "Takip yok"
         self.pub_debug.publish(dbg)
-
 
 def main():
     rclpy.init()

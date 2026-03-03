@@ -288,19 +288,19 @@ class BEVImageNodeV2(Node):
         if cam_z < 0.5:  # YERDE
             # Yataya yakın kamera, minimal filtre
             min_pitch_deg = -5.0  # En az 5° aşağı bakmalı (esnek)
-            max_proj_dist = 15.0
+            max_proj_dist = 25.0
             tolerance = 0.1  # Geniş tolerans
             
         elif cam_z < 3.0:  # DÜŞÜK İRTİFA
             min_pitch_deg = -10.0  # En az 10° aşağı
-            max_proj_dist = cam_z * 5.0
+            max_proj_dist = cam_z * 10.0
             tolerance = 0.05
             
         else:  # YÜKSEK İRTİFA
             min_pitch_deg = -20.0  # En az 20° aşağı
-            max_proj_dist = cam_z * 6.0
+            max_proj_dist = cam_z * 12.0
             tolerance = 0.02
-        max_proj_dist = min(max_proj_dist, 40.0)
+        max_proj_dist = min(max_proj_dist, 100.0)
         # ✅ DEBUG: Kamera durumunu logla
         self.get_logger().info(
             f"Camera: alt={cam_z:.2f}m, pitch={pitch:.1f}°, "

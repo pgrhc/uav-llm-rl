@@ -2,8 +2,6 @@ import subprocess
 import time
 import random
 import os
-import math
-import json
 from dataclasses import dataclass
 
 # --- AYARLAR ---
@@ -16,38 +14,22 @@ Z_CENTER = WALL_HEIGHT / 2
 ROWS, COLS = 15, 15
 random.seed(time.time_ns())
 
-# Labirentteki hücrelerin % kaçı kadar insan (çok yüksekse performans düşer)
-ACTOR_DENSITY = 0.30
-
-# Drone Spawn Merkezi (grid hücre)
+# --- DÜZELTME 1: İNSAN SAYISI AYARI ---
+# Labirentteki hücrelerin %15'ine insan koy (Eskiden 0.03 idi)
+ACTOR_DENSITY = 0.3  
+# Drone Spawn Merkezi
 DRONE_SPAWN_CELL = (ROWS // 2, COLS // 2)
-
 # İnsanların spawn noktasına yaklaşmaması gereken mesafe (hücre cinsinden)
 AVOID_SPAWN_RADIUS_CELLS = 2.0
-
-# --- COLLIDER AYARLARI ---
-COLLIDER_RADIUS = 0.30   # m
-COLLIDER_HEIGHT = 1.70   # m
-COLLIDER_Z = COLLIDER_HEIGHT / 2.0
-FOLLOW_HZ = 20.0         # 20 Hz takip
-FOLLOW_SLEEP = 1.0 / FOLLOW_HZ
 
 # --- DOSYA YOLLARI ---
 SKIN_PATH = "/home/ubuntu/Desktop/gazebo_custom_models/actor_walking/walk.dae"
 ANIM_PATH = "/home/ubuntu/Desktop/gazebo_custom_models/actor_walking/walk.dae"
-
-WALLS_SAVE_PATH = "/home/ubuntu/Desktop/maze_walls.json"
+box_uri = "/home/ubuntu/Desktop/gazebo_custom_models/actor_walking/Untitled.dae"
 
 def _file_uri(abs_path: str) -> str:
     abs_path = os.path.abspath(abs_path)
     return "file:///" + abs_path.lstrip("/")
-
-# ---- Gazebo helper: run gz command ----
-def _run(cmd: str, timeout_ms=5000, fatal=False):
-    res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    if fatal and res.returncode != 0:
-        raise RuntimeError(f"[CMD FAIL]\ncmd: {cmd}\nstdout:{res.stdout}\nstderr:{res.stderr}")
-    return res
 
 # ---- Temel Fonksiyonlar ----
 def spawn_sdf_model(model_name: str, sdf_string: str):
@@ -62,12 +44,7 @@ def spawn_sdf_model(model_name: str, sdf_string: str):
         f"--timeout 5000 "
         f"--req 'sdf_filename: \"{path}\"'"
     )
-    res = _run(cmd)
-    # Spawn başarısızsa en azından stderr görünsün
-    if res.returncode != 0 or ("true" not in (res.stdout or "").lower()):
-        print(f"[SPAWN WARN] {model_name}\nstdout:{res.stdout}\nstderr:{res.stderr}")
-    else:
-        print(f"✅ Spawned: {model_name}")
+    subprocess.run(cmd, shell=True, capture_output=True, text=True)
 
 def remove_entity(name: str, entity_type: str = "MODEL"):
     cmd = (
@@ -77,13 +54,13 @@ def remove_entity(name: str, entity_type: str = "MODEL"):
         f"--timeout 2000 "
         f"--req 'name: \"{name}\" type: {entity_type}'"
     )
-    _run(cmd)
+    subprocess.run(cmd, shell=True, capture_output=True, text=True)
 
 # ---- Maze Algoritmaları ----
 DIRS = {"N": (-1,0), "E": (0,1), "S": (1,0), "W": (0,-1)}
 OPP  = {"N":"S","S":"N","E":"W","W":"E"}
 
-def in_bounds(r,c,rows,cols):
+def in_bounds(r,c,rows,cols): 
     return 0 <= r < rows and 0 <= c < cols
 
 def generate_perfect_maze(rows, cols):
@@ -108,17 +85,25 @@ def generate_perfect_maze(rows, cols):
         vis[rr][cc] = True
         stack.append((rr,cc))
 
-    # sadece giriş/çıkış
+    # --- DÜZELTME 2: DUVARLARI NORMALE DÖNDÜRME ---
+    # Artık sadece giriş/çıkış açık. 
+    # Drone'un doğduğu yerdeki komşu duvarları silmiyoruz.
+    
     walls[0][0]["N"] = False
     walls[rows-1][cols-1]["S"] = False
-
-    # Drone spawn hücresini “kavşak” yap (senin mantığın)
+    
+    # Sadece drone'un tam doğduğu hücreyi biraz rahatlatmak için 
+    # o hücrenin kendi duvarlarını açabiliriz (Opsiyonel, kapalı kalsın dersen burayı da sil)
+    # Ama komşularına (sr-1, sr+1 vb) dokunmuyoruz.
     sr, sc = DRONE_SPAWN_CELL
     if in_bounds(sr, sc, rows, cols):
+        # 4 tarafı açık bir kavşak yapıyoruz (sadece o hücre için)
         walls[sr][sc]["N"] = False
         walls[sr][sc]["S"] = False
         walls[sr][sc]["E"] = False
         walls[sr][sc]["W"] = False
+        
+        # Karşılık gelen komşu duvarları da açmalıyız ki duvarın tek yüzü silinip diğeri kalmasın
         if in_bounds(sr-1, sc, rows, cols): walls[sr-1][sc]["S"] = False
         if in_bounds(sr+1, sc, rows, cols): walls[sr+1][sc]["N"] = False
         if in_bounds(sr, sc-1, rows, cols): walls[sr][sc-1]["E"] = False
@@ -128,13 +113,10 @@ def generate_perfect_maze(rows, cols):
 
 @dataclass
 class Segment:
-    x: float
-    y: float
-    length: float
-    horizontal: bool
+    x: float; y: float; length: float; horizontal: bool
 
 def maze_to_segments(walls, rows, cols, cell_size):
-    # Drone spawn (merkez) noktasına göre labirenti kaydır (0,0 drone hücresinin merkezi)
+    # Drone spawn (merkez) noktasına göre labirenti kaydır
     spawn_r, spawn_c = DRONE_SPAWN_CELL
     ox = - (spawn_c + 0.5) * cell_size
     oy = - (spawn_r + 0.5) * cell_size
@@ -150,37 +132,28 @@ def maze_to_segments(walls, rows, cols, cell_size):
             if walls[r][c]["E"]: v[r][c+1] = True
 
     segs = []
-
-    # merge horizontal
+    # Yatay Duvarlar
     for r in range(rows+1):
         c = 0
         while c < cols:
-            if not h[r][c]:
-                c += 1; continue
+            if not h[r][c]: c += 1; continue
             start = c
-            while c < cols and h[r][c]:
-                c += 1
-            end = c
-            length = (end-start)*cell_size
-            x = ox + (start*cell_size + end*cell_size)/2.0
-            y = oy + r*cell_size
-            segs.append(Segment(x,y,length,True))
-
-    # merge vertical
+            while c < cols and h[r][c]: c += 1
+            length = (c - start) * cell_size
+            x = ox + (start + c) * cell_size / 2.0
+            y = oy + r * cell_size
+            segs.append(Segment(x, y, length, True))
+    # Dikey Duvarlar
     for c in range(cols+1):
         r = 0
         while r < rows:
-            if not v[r][c]:
-                r += 1; continue
+            if not v[r][c]: r += 1; continue
             start = r
-            while r < rows and v[r][c]:
-                r += 1
-            end = r
-            length = (end-start)*cell_size
-            x = ox + c*cell_size
-            y = oy + (start*cell_size + end*cell_size)/2.0
-            segs.append(Segment(x,y,length,False))
-
+            while r < rows and v[r][c]: r += 1
+            length = (r - start) * cell_size
+            x = ox + c * cell_size
+            y = oy + (start + r) * cell_size / 2.0
+            segs.append(Segment(x, y, length, False))
     return segs
 
 def build_maze_sdf(model_name: str, segments):
@@ -190,60 +163,42 @@ def build_maze_sdf(model_name: str, segments):
         links.append(f"""
     <link name="wall_{i}">
       <pose>{seg.x} {seg.y} {Z_CENTER} 0 0 0</pose>
-      <collision name="c">
-        <geometry><box><size>{sx} {sy} {WALL_HEIGHT}</size></box></geometry>
-      </collision>
-      <visual name="v">
-        <geometry><box><size>{sx} {sy} {WALL_HEIGHT}</size></box></geometry>
-        <material>
-          <ambient>0.2 0.2 0.2 1</ambient>
-          <diffuse>0.2 0.2 0.2 1</diffuse>
-        </material>
-      </visual>
+      <collision name="c"><geometry><box><size>{sx} {sy} {WALL_HEIGHT}</size></box></geometry></collision>
+      <visual name="v"><geometry><box><size>{sx} {sy} {WALL_HEIGHT}</size></box></geometry>
+        <material><ambient>0.2 0.2 0.2 1</ambient><diffuse>0.2 0.2 0.2 1</diffuse></material></visual>
     </link>""")
-    return f"""<?xml version="1.0"?>
-<sdf version="1.9">
-  <model name="{model_name}">
-    <static>true</static>
-    {''.join(links)}
-  </model>
-</sdf>"""
+    return f"""<?xml version="1.0"?><sdf version="1.9"><model name="{model_name}"><static>true</static>{''.join(links)}</model></sdf>"""
 
-def save_walls(walls, path=WALLS_SAVE_PATH):
-    with open(path, "w") as f:
-        json.dump(walls, f)
-    print(f"✅ Walls kaydedildi: {path}")
+# ---- Actor Logic (GELİŞMİŞ) ----
 
-# ---- Actor Logic ----
 def collect_corridors(walls, rows, cols, min_len=2):
+    """Hem yatay hem dikey koridorları bulur"""
     corridors = []
-
-    # Yatay
+    
+    # 1. Yatay Koridorlar
     for r in range(rows):
         c = 0
         while c < cols:
             if c < cols-1 and not walls[r][c]["E"]:
                 start = c
-                while c < cols-1 and not walls[r][c]["E"]:
-                    c += 1
+                while c < cols-1 and not walls[r][c]["E"]: c += 1
                 length = c - start + 1
                 if length >= min_len:
-                    corridors.append(((r, start), (r, c), True))
+                    corridors.append(((r, start), (r, c), True)) # True = Horizontal
             c += 1
-
-    # Dikey
+            
+    # 2. Dikey Koridorlar (YENİ)
     for c in range(cols):
         r = 0
         while r < rows:
             if r < rows-1 and not walls[r][c]["S"]:
                 start = r
-                while r < rows-1 and not walls[r][c]["S"]:
-                    r += 1
+                while r < rows-1 and not walls[r][c]["S"]: r += 1
                 length = r - start + 1
                 if length >= min_len:
-                    corridors.append(((start, c), (r, c), False))
+                    corridors.append(((start, c), (r, c), False)) # False = Vertical
             r += 1
-
+            
     return corridors
 
 def corridor_to_world(corridor, rows, cols, cell_size):
@@ -260,37 +215,29 @@ def corridor_to_world(corridor, rows, cols, cell_size):
 
 def pick_actor_count(rows, cols):
     area = rows * cols
+    # %15 yoğunluk (Örn: 100 hücrede 15 insan)
     n = max(1, int(area * ACTOR_DENSITY))
-    return min(n, 150)
-
-def _corridor_near_spawn(corridor, spawn_r, spawn_c, radius):
-    (r1, c1), (r2, c2), _ = corridor
-    if (abs(r1 - spawn_r) < radius and abs(c1 - spawn_c) < radius) or \
-       (abs(r2 - spawn_r) < radius and abs(c2 - spawn_c) < radius):
-        return True
-    return False
+    return min(n, 150) # Max sınırını da artırdım
 
 def build_actor_sdf(actor_name, skin_uri, anim_uri, x1, y1, x2, y2, is_horiz):
+    # Dikey ise 90 derece (1.57), Yatay ise 0 derece
     yaw_fwd = 0.0 if is_horiz else 1.57
     yaw_back = 3.14 if is_horiz else -1.57
-
+    
     dx = x2 - x1
     dy = y2 - y1
-
     ACTOR_Z = 0.9
     dist = (dx*dx + dy*dy) ** 0.5
-
-    # hız profili (rastgele)
-    base_speed = random.choice([0.6, 1.0, 1.4])  # m/s
-    duration = max(1.0, dist / base_speed)
-
-    turn_wait = random.choice([0.2, 0.5, 0.8])
-
+    
+    # Hız Profili
+    base_speed = 1.0 # m/s
+    duration = dist / base_speed
+    
     t0 = 0.0
     t1 = duration
-    t2 = t1 + turn_wait
+    t2 = t1 + 0.5 # Dönüş bekleme
     t3 = t2 + duration
-    t4 = t3 + turn_wait
+    t4 = t3 + 0.5
 
     sdf = f"""<?xml version="1.0"?>
 <sdf version="1.9">
@@ -312,226 +259,110 @@ def build_actor_sdf(actor_name, skin_uri, anim_uri, x1, y1, x2, y2, is_horiz):
   </actor>
 </sdf>
 """
-    # collider takip için meta (world koordinatları + süreler)
-    meta = {
-        "actor": actor_name,
-        "x1": x1, "y1": y1,
-        "x2": x2, "y2": y2,
-        "t_go": duration,
-        "t_turn": turn_wait,
-        "is_horiz": is_horiz,
-        "yaw_fwd": yaw_fwd,
-        "yaw_back": yaw_back,
-    }
-    return sdf, meta
+    return sdf
 
-# ---- COLLIDER: model SDF ----
-def build_collider_sdf(model_name: str, x: float, y: float, yaw: float):
-    # görünmez collision silindir (LiDAR/Radar/çarpışma için)
-    # kinematic: dışarıdan pose basacağız
-    # visual yok (istersen debug için ekleyebilirsin)
-    r = COLLIDER_RADIUS
-    h = COLLIDER_HEIGHT
-    z = COLLIDER_Z
-    # basit inertia
-    mass = 30.0
-    ixx = (1/12) * mass * (3*r*r + h*h)
-    iyy = ixx
-    izz = 0.5 * mass * r*r
+def build_collision_box_sdf(name, x, y, x2, y2, is_horiz):
+    dx, dy = x2 - x, y2 - y
+    duration = ((dx**2 + dy**2)**0.5) / 1.0
+    yaw_fwd = 0.0 if is_horiz else 1.57
+    yaw_back = 3.14 if is_horiz else -1.57
 
     sdf = f"""<?xml version="1.0"?>
 <sdf version="1.9">
-  <model name="{model_name}">
+  <model name="{name}_phys">
     <static>false</static>
+    <pose>{x} {y} -0.6 0 0 0</pose>
     <link name="link">
-      <pose>{x} {y} {z} 0 0 {yaw}</pose>
-      <kinematic>true</kinematic>
       <inertial>
-        <mass>{mass}</mass>
-        <inertia>
-          <ixx>{ixx}</ixx><iyy>{iyy}</iyy><izz>{izz}</izz>
-          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
-        </inertia>
+        <mass>80.0</mass>
+        <inertia><ixx>10</ixx><iyy>10</iyy><izz>10</izz></inertia>
       </inertial>
-      <collision name="col">
-        <geometry>
-          <cylinder>
-            <radius>{r}</radius>
-            <length>{h}</length>
-          </cylinder>
-        </geometry>
+      <collision name="collision">
+        <geometry><mesh><uri>{box_uri}</uri></mesh></geometry>
+        <surface><contact><collide_bitmask>0xFF</collide_bitmask></contact></surface>
       </collision>
+      <visual name="visual">
+        <geometry><mesh><uri>{box_uri}</uri></mesh></geometry>
+        <material><ambient>1 0 0 0.3</ambient><diffuse>1 0 0 0.3</diffuse></material>
+      </visual>
     </link>
+    <script>
+      <loop>true</loop>
+      <auto_start>true</auto_start>
+      <trajectory id="0" type="walking">
+        <waypoint><time>0.0</time><pose>0 0 0 0 0 {yaw_fwd}</pose></waypoint>
+        <waypoint><time>{duration:.2f}</time><pose>{dx:.3f} {dy:.3f} 0 0 0 {yaw_fwd}</pose></waypoint>
+        <waypoint><time>{duration+0.5:.2f}</time><pose>{dx:.3f} {dy:.3f} 0 0 0 {yaw_back}</pose></waypoint>
+        <waypoint><time>{2*duration+0.5:.2f}</time><pose>0 0 0 0 0 {yaw_back}</pose></waypoint>
+      </trajectory>
+    </script>
   </model>
-</sdf>
-"""
+</sdf>"""
     return sdf
-
-# ---- set_pose service discovery + pose set ----
-def _find_set_pose_service():
-    res = _run("gz service -l")
-    if res.returncode != 0:
-        print("❌ gz service -l çalışmadı.")
-        print(res.stderr)
-        return None
-
-    lines = (res.stdout or "").splitlines()
-    # en çok görülen isim: /world/<world>/set_pose
-    preferred = f"/world/{WORLD_NAME}/set_pose"
-    for ln in lines:
-        if ln.strip() == preferred:
-            return preferred
-
-    # fallback: içinde set_pose geçen world servisi ara
-    cand = []
-    for ln in lines:
-        s = ln.strip()
-        if f"/world/{WORLD_NAME}/" in s and "set_pose" in s:
-            cand.append(s)
-    return cand[0] if cand else None
-
-def _yaw_to_quat(yaw: float):
-    # roll=pitch=0
-    cy = math.cos(yaw * 0.5)
-    sy = math.sin(yaw * 0.5)
-    # w, x, y, z
-    return cy, 0.0, 0.0, sy
-
-def set_model_pose(service_name: str, model_name: str, x: float, y: float, z: float, yaw: float):
-    w, qx, qy, qz = _yaw_to_quat(yaw)
-    req = (
-        f'name: "{model_name}" '
-        f'position: {{x: {x:.5f}, y: {y:.5f}, z: {z:.5f}}} '
-        f'orientation: {{w: {w:.6f}, x: {qx:.6f}, y: {qy:.6f}, z: {qz:.6f}}}'
-    )
-
-    cmd = (
-        f'gz service -s {service_name} '
-        f'--reqtype gz.msgs.Pose '
-        f'--reptype gz.msgs.Boolean '
-        f'--timeout 1000 '
-        f'--req \'{req}\''
-    )
-    _run(cmd)
-
-# ---- collider follow loop ----
-def _pos_on_pingpong(meta, t):
-    """
-    meta: x1,y1,x2,y2,t_go,t_turn,yaw_fwd,yaw_back
-    t: elapsed seconds
-    returns x,y,yaw
-    """
-    x1, y1, x2, y2 = meta["x1"], meta["y1"], meta["x2"], meta["y2"]
-    t_go = meta["t_go"]
-    t_turn = meta["t_turn"]
-    yaw_fwd = meta["yaw_fwd"]
-    yaw_back = meta["yaw_back"]
-
-    period = 2*t_go + 2*t_turn
-    if period <= 1e-6:
-        return x1, y1, yaw_fwd
-
-    tt = t % period
-
-    # 0..t_go : ileri
-    if tt < t_go:
-        a = tt / t_go
-        x = x1 + (x2 - x1) * a
-        y = y1 + (y2 - y1) * a
-        return x, y, yaw_fwd
-
-    # t_go..t_go+t_turn : dönüş bekleme (uçta)
-    if tt < t_go + t_turn:
-        return x2, y2, yaw_back
-
-    # t_go+t_turn..2*t_go+t_turn : geri
-    if tt < 2*t_go + t_turn:
-        a = (tt - (t_go + t_turn)) / t_go
-        x = x2 + (x1 - x2) * a
-        y = y2 + (y1 - y2) * a
-        return x, y, yaw_back
-
-    # son dönüş bekleme (başta)
-    return x1, y1, yaw_fwd
-
-def run_collider_follow_loop(actors_meta):
-    svc = _find_set_pose_service()
-    if not svc:
-        print("❌ set_pose servisi bulunamadı.")
-        print("İpucu: `gz service -l | grep set_pose` çıktısını kontrol et.")
-        return
-
-    print(f"✅ Collider takip servisi: {svc}")
-    t0 = time.time()
-
-    try:
-        while True:
-            now = time.time()
-            elapsed = now - t0
-            for meta in actors_meta:
-                col = meta["collider"]
-                x, y, yaw = _pos_on_pingpong(meta, elapsed)
-                set_model_pose(svc, col, x, y, COLLIDER_Z, yaw)
-            time.sleep(FOLLOW_SLEEP)
-    except KeyboardInterrupt:
-        print("\n⏹️ Takip döngüsü durduruldu (Ctrl+C).")
+def _corridor_near_spawn(corridor, spawn_r, spawn_c, radius):
+    (r1, c1), (r2, c2), _ = corridor
+    # Basitçe koridorun herhangi bir ucu spawn'a çok yakınsa ele
+    # (Daha hassas kontrol yapılabilir ama bu yeterli)
+    if (abs(r1 - spawn_r) < radius and abs(c1 - spawn_c) < radius) or \
+       (abs(r2 - spawn_r) < radius and abs(c2 - spawn_c) < radius):
+        return True
+    return False
 
 def spawn_multiple_actors(walls, rows, cols):
-    if not os.path.exists(SKIN_PATH) or not os.path.exists(ANIM_PATH):
-        print("❌ Skin/Anim dosyaları eksik.")
-        return []
+    if not os.path.exists(SKIN_PATH):
+        print("❌ Dosyalar eksik.")
+        return
 
+    # Hem Yatay Hem Dikey koridorları topla
     corridors = collect_corridors(walls, rows, cols, min_len=2)
-
+    
     sr, sc = DRONE_SPAWN_CELL
+    # Spawn yakını temizle
     safe_corridors = [c for c in corridors if not _corridor_near_spawn(c, sr, sc, AVOID_SPAWN_RADIUS_CELLS)]
+    
     if not safe_corridors:
         print("❌ Uygun koridor bulunamadı.")
-        return []
+        return
 
     n = min(pick_actor_count(rows, cols), len(safe_corridors))
     print(f"🎯 Hedeflenen İnsan Sayısı: {n}")
-
+    
     chosen = random.sample(safe_corridors, k=n)
     skin_uri = _file_uri(SKIN_PATH)
     anim_uri = _file_uri(ANIM_PATH)
 
-    metas = []
-
     for idx, corr in enumerate(chosen):
         x1, y1, x2, y2, is_horiz = corridor_to_world(corr, rows, cols, CELL_SIZE)
+        name = f"human_{idx}_{random.randint(100,999)}"
+        sdf = build_actor_sdf(name, skin_uri, anim_uri, x1, y1, x2, y2, is_horiz)
+        
+        # remove_entity(name, "ACTOR")
+        spawn_sdf_model(name, sdf)
+        print(f"✅ Actor[{idx}] spawn edildi.")
 
-        actor_name = f"human_{idx}_{random.randint(100,999)}"
-        collider_name = f"{actor_name}_col"
+# ─── WALLS KAYDETME (auto_maze_navigator.py için) ──────────────────────────
+import json
 
-        # actor sdf + meta
-        actor_sdf, meta = build_actor_sdf(actor_name, skin_uri, anim_uri, x1, y1, x2, y2, is_horiz)
+WALLS_SAVE_PATH = "/home/ubuntu/Desktop/maze_walls.json"
 
-        # collider sdf (başlangıçta x1,y1)
-        col_sdf = build_collider_sdf(collider_name, x1, y1, meta["yaw_fwd"])
+def save_walls(walls, path=WALLS_SAVE_PATH):
+    """
+    Maze duvar verisini JSON olarak kaydet.
+    auto_maze_navigator.py bu dosyayı okuyarak A* hesaplar.
+    """
+    with open(path, "w") as f:
+        json.dump(walls, f)
+    print(f"✅ Walls kaydedildi: {path}")
+# ────────────────────────────────────────────────────────────────────────────
 
-        # önce eskilerini kaldır
-        remove_entity(actor_name, "ACTOR")
-        remove_entity(collider_name, "MODEL")
 
-        # spawn
-        spawn_sdf_model(actor_name, actor_sdf)
-        spawn_sdf_model(collider_name, col_sdf)
-
-        # meta’ya collider ismini ekle
-        meta["collider"] = collider_name
-        metas.append(meta)
-
-        print(f"✅ Actor+Collider spawn: {actor_name} + {collider_name}")
-
-    return metas
-
-# ---- MAIN ----
 if __name__ == "__main__":
     print("🧩 Maze oluşturuluyor...")
-    remove_entity("maze_current", "MODEL")
+    #remove_entity("maze_current", "MODEL")
 
     walls = generate_perfect_maze(ROWS, COLS)
+
+    # ← YENİ: Walls'ı kaydet ki auto_maze_navigator okusun
     save_walls(walls)
 
     segments = maze_to_segments(walls, ROWS, COLS, CELL_SIZE)
@@ -539,9 +370,4 @@ if __name__ == "__main__":
     spawn_sdf_model("maze_current", maze_sdf)
 
     time.sleep(1.0)
-
-    actors_meta = spawn_multiple_actors(walls, ROWS, COLS)
-
-    # Collider’ları actor rotasına kilitle (20 Hz)
-    if actors_meta:
-        run_collider_follow_loop(actors_meta)
+    spawn_multiple_actors(walls, ROWS, COLS)

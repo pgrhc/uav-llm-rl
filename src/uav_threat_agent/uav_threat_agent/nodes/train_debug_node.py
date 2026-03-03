@@ -61,69 +61,69 @@ def signal_handler(sig, frame):
 # CUSTOM CALLBACKS
 # ══════════════════════════════════════════════════════════════════════════════
 
-class LazyStrategyDetector(BaseCallback):
-    def __init__(self, check_freq: int = 10_000, verbose: int = 1):
-        super().__init__(verbose)
-        self.check_freq = check_freq
-        self.actions_buffer = []
+# class LazyStrategyDetector(BaseCallback):
+#     def __init__(self, check_freq: int = 10_000, verbose: int = 1):
+#         super().__init__(verbose)
+#         self.check_freq = check_freq
+#         self.actions_buffer = []
 
-    def _on_step(self) -> bool:
-        actions = self.locals.get("actions", None)
-        if actions is None:
-            return True
+#     def _on_step(self) -> bool:
+#         actions = self.locals.get("actions", None)
+#         if actions is None:
+#             return True
 
-        if len(actions.shape) == 2:
-            action = actions[0]
-        else:
-            action = actions
+#         if len(actions.shape) == 2:
+#             action = actions[0]
+#         else:
+#             action = actions
 
-        self.actions_buffer.append(action.copy())
+#         self.actions_buffer.append(action.copy())
 
-        if self.num_timesteps % self.check_freq == 0:
-            self._analyze_and_report()
-            self.actions_buffer = []
+#         if self.num_timesteps % self.check_freq == 0:
+#             self._analyze_and_report()
+#             self.actions_buffer = []
 
-        return True
+#         return True
 
-    def _analyze_and_report(self):
-        if len(self.actions_buffer) == 0:
-            return
+#     def _analyze_and_report(self):
+#         if len(self.actions_buffer) == 0:
+#             return
 
-        actions = np.array(self.actions_buffer)
+#         actions = np.array(self.actions_buffer)
 
-        mean_action = float(np.mean(actions))
-        action_std = float(np.std(actions))
-        zero_ratio = float(np.sum(actions < 0.1) / actions.size)
-        high_ratio = float(np.sum(actions > 0.5) / actions.size)
+#         mean_action = float(np.mean(actions))
+#         action_std = float(np.std(actions))
+#         zero_ratio = float(np.sum(actions < 0.1) / actions.size)
+#         high_ratio = float(np.sum(actions > 0.5) / actions.size)
 
-        self.logger.record("custom/mean_action", mean_action)
-        self.logger.record("custom/action_std", action_std)
-        self.logger.record("custom/zero_ratio", zero_ratio)
-        self.logger.record("custom/high_ratio", high_ratio)
+#         self.logger.record("custom/mean_action", mean_action)
+#         self.logger.record("custom/action_std", action_std)
+#         self.logger.record("custom/zero_ratio", zero_ratio)
+#         self.logger.record("custom/high_ratio", high_ratio)
 
-        warnings = []
-        if mean_action < 0.15:
-            warnings.append("⚠️  LAZY: Mean action < 0.15")
-        if action_std < 0.1:
-            warnings.append("⚠️  NO DIVERSITY: Std < 0.1")
-        if zero_ratio > 0.7:
-            warnings.append("⚠️  TOO MANY ZEROS: >70%")
-        if high_ratio < 0.05:
-            warnings.append("⚠️  NO HIGH SCORES: <5%")
+#         warnings = []
+#         if mean_action < 0.15:
+#             warnings.append("⚠️  LAZY: Mean action < 0.15")
+#         if action_std < 0.1:
+#             warnings.append("⚠️  NO DIVERSITY: Std < 0.1")
+#         if zero_ratio > 0.7:
+#             warnings.append("⚠️  TOO MANY ZEROS: >70%")
+#         if high_ratio < 0.05:
+#             warnings.append("⚠️  NO HIGH SCORES: <5%")
 
-        print("\n" + "=" * 70)
-        print(f"📊 ACTION CHECK @ {self.num_timesteps:,} timesteps")
-        print("=" * 70)
-        print(f"  Mean: {mean_action:.3f} | Std: {action_std:.3f}")
-        print(f"  Zero: {zero_ratio:.1%} | High: {high_ratio:.1%}")
+#         print("\n" + "=" * 70)
+#         print(f"📊 ACTION CHECK @ {self.num_timesteps:,} timesteps")
+#         print("=" * 70)
+#         print(f"  Mean: {mean_action:.3f} | Std: {action_std:.3f}")
+#         print(f"  Zero: {zero_ratio:.1%} | High: {high_ratio:.1%}")
 
-        if warnings:
-            print("\n🚨 ALARMLAR:")
-            for w in warnings:
-                print(f"  {w}")
-        else:
-            print("\n✅ Sağlıklı görünüyor")
-        print("=" * 70 + "\n")
+#         if warnings:
+#             print("\n🚨 ALARMLAR:")
+#             for w in warnings:
+#                 print(f"  {w}")
+#         else:
+#             print("\n✅ Sağlıklı görünüyor")
+#         print("=" * 70 + "\n")
 
 
 class ProgressReporter(BaseCallback):
@@ -269,58 +269,58 @@ class TrainingLogger(BaseCallback):
 # EARLY EVALUATION FUNCTION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def early_lazy_check(model, env, n_episodes: int = 5, max_steps: int = 2048):
-    """
-    İlk 20k sonunda lazy strategy kontrolü.
+# def early_lazy_check(model, env, n_episodes: int = 5, max_steps: int = 2048):
+#     """
+#     İlk 20k sonunda lazy strategy kontrolü.
     
-    FIX: mean_action normalize edilmiş olabileceği için SADECE zero_ratio'ya bak!
-    """
-    print("\n" + "=" * 70)
-    print("🔍 EARLY LAZY CHECK @ 20k timesteps")
-    print("=" * 70)
+#     FIX: mean_action normalize edilmiş olabileceği için SADECE zero_ratio'ya bak!
+#     """
+#     print("\n" + "=" * 70)
+#     print("🔍 EARLY LAZY CHECK @ 20k timesteps")
+#     print("=" * 70)
 
-    all_actions = []
-    for _ in range(n_episodes):
-        obs = env.reset()
-        done = np.array([False])
-        steps = 0
+#     all_actions = []
+#     for _ in range(n_episodes):
+#         obs = env.reset()
+#         done = np.array([False])
+#         steps = 0
 
-        while (not done[0]) and (steps < max_steps):
-            action, _ = model.predict(obs, deterministic=True)
-            all_actions.append(action[0].copy())
-            obs, _, done, _ = env.step(action)
-            steps += 1
+#         while (not done[0]) and (steps < max_steps):
+#             action, _ = model.predict(obs, deterministic=True)
+#             all_actions.append(action[0].copy())
+#             obs, _, done, _ = env.step(action)
+#             steps += 1
 
-    actions = np.array(all_actions)
+#     actions = np.array(all_actions)
     
-    # ═══════════════════════════════════════════════════════════════════════
-    # FIX: mean_action normalize edilmiş olabilir, güvenilmez!
-    # ═══════════════════════════════════════════════════════════════════════
-    # mean_action = float(np.mean(actions))  # ← KULLANMA!
+#     # ═══════════════════════════════════════════════════════════════════════
+#     # FIX: mean_action normalize edilmiş olabilir, güvenilmez!
+#     # ═══════════════════════════════════════════════════════════════════════
+#     # mean_action = float(np.mean(actions))  # ← KULLANMA!
     
-    zero_ratio = float(np.sum(actions < 0.1) / actions.size)
-    high_ratio = float(np.sum(actions > 0.5) / actions.size)
+#     zero_ratio = float(np.sum(actions < 0.1) / actions.size)
+#     high_ratio = float(np.sum(actions > 0.5) / actions.size)
     
-    # print(f"  Mean Action: {mean_action:.3f}")  # ← Misleading, gösterme
-    print(f"  Zero Ratio:  {zero_ratio:.1%}")
-    print(f"  High Ratio:  {high_ratio:.1%}")
+#     # print(f"  Mean Action: {mean_action:.3f}")  # ← Misleading, gösterme
+#     print(f"  Zero Ratio:  {zero_ratio:.1%}")
+#     print(f"  High Ratio:  {high_ratio:.1%}")
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # SADECE zero_ratio ve high_ratio'ya bak!
-    # ═══════════════════════════════════════════════════════════════════════
-    is_lazy = (zero_ratio > 0.75) or (high_ratio < 0.03)
+#     # ═══════════════════════════════════════════════════════════════════════
+#     # SADECE zero_ratio ve high_ratio'ya bak!
+#     # ═══════════════════════════════════════════════════════════════════════
+#     is_lazy = (zero_ratio > 0.75) or (high_ratio < 0.03)
     
-    if is_lazy:
-        print("\n🚨 LAZY STRATEGY DETECTED!")
-        print("  → Zero ratio >75% VEYA high ratio <3%")
-        print("  → Eğitim DURDURULMALI!")
-        return False
-    else:
-        print("\n✅ Action distribution OK")
-        print(f"  → Zero: {zero_ratio:.1%} (<75% ✓)")
-        print(f"  → High: {high_ratio:.1%} (>3% ✓)")
-        print("  → Devam edilebilir.")
-        return True
+#     if is_lazy:
+#         print("\n🚨 LAZY STRATEGY DETECTED!")
+#         print("  → Zero ratio >75% VEYA high ratio <3%")
+#         print("  → Eğitim DURDURULMALI!")
+#         return False
+#     else:
+#         print("\n✅ Action distribution OK")
+#         print(f"  → Zero: {zero_ratio:.1%} (<75% ✓)")
+#         print(f"  → High: {high_ratio:.1%} (>3% ✓)")
+#         print("  → Devam edilebilir.")
+#         return True
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN TRAINING
@@ -361,20 +361,20 @@ def main(args=None):
         "env_id": "ThreatAgent-v11",
         "algo": "PPO",
         "hyperparameters": {
-            "learning_rate": 5e-5,
+            "learning_rate": 3e-4,
             "n_steps": 4096,
             "batch_size": 1024,
             "n_epochs": 10,
             "gamma": 0.995,
             "gae_lambda": 0.95,
-            "clip_range": 0.15,
-            "ent_coef": 0.08,
+            "clip_range": 0.2,
+            "ent_coef": 0.01,
         },
         "vec_normalize": {
             "norm_obs": True,
-            "norm_reward": False,
+            "norm_reward": True,
             "clip_obs": 10.0,
-            "clip_reward": 5.0,
+            "clip_reward": 10.0,
         },
     }
     with open(os.path.join(log_dir, "run_meta.json"), "w", encoding="utf-8") as f:
@@ -391,8 +391,8 @@ def main(args=None):
         return env
 
     env = DummyVecEnv([make_env])
-    env = VecNormalize(env, norm_obs=True, norm_reward=False,
-                       clip_obs=10.0, clip_reward=5.0)
+    env = VecNormalize(env, norm_obs=True, norm_reward=True,
+                       clip_obs=10.0, clip_reward=10.0, gamma=0.995 )
     _env = env
 
     # ─── 2. Model ──────────────────────────────────────────────────────────
@@ -402,14 +402,14 @@ def main(args=None):
         device="cuda",
         verbose=1,
         tensorboard_log=log_dir,
-        learning_rate=5e-5,
+        learning_rate=3e-4,
         n_steps=4096,
         batch_size=1024,
         n_epochs=10,
         gamma=0.995,
         gae_lambda=0.95,
-        clip_range=0.15,
-        ent_coef=0.08,
+        clip_range=0.2,
+        ent_coef=0.01,
         vf_coef=0.5,
         max_grad_norm=0.5,
         seed=SEED,
@@ -428,8 +428,8 @@ def main(args=None):
         verbose=1,  # Her checkpoint'te konsola log
     )
 
-    lazy_detector = LazyStrategyDetector(check_freq=20_000)
-    progress_reporter = ProgressReporter(target_steps=TOTAL_TIMESTEPS, report_freq=5_000)
+    # lazy_detector = LazyStrategyDetector(check_freq=20_000)
+    progress_reporter = ProgressReporter(target_steps=TOTAL_TIMESTEPS, report_freq=4096)
     env_metrics_logger = EnvironmentMetricsLogger(log_freq=5_000)
     training_logger = TrainingLogger(
         log_file=os.path.join(log_dir, "training_log.json"),
@@ -440,7 +440,7 @@ def main(args=None):
 
     callbacks = CallbackList([
         checkpoint_cb,
-        lazy_detector,
+        # lazy_detector,
         progress_reporter,
         env_metrics_logger,
         training_logger,
@@ -459,29 +459,29 @@ def main(args=None):
     # ═══════════════════════════════════════════════════════════════════════
     # PHASE 1: İlk 20k
     # ═══════════════════════════════════════════════════════════════════════
-    print("🔬 PHASE 1: Initial 20k timesteps (lazy check)")
-    model.learn(total_timesteps=40_000, callback=callbacks, progress_bar=True)
+    # print("🔬 PHASE 1: Initial 40k timesteps (lazy check)")
+    model.learn(total_timesteps=204_800, callback=callbacks, progress_bar=True)
 
-    if not early_lazy_check(model, env):
-        print("\n🛑 Eğitim durduruldu: Lazy strategy detected!")
-        training_logger._flush()
-        env.close()
-        rclpy.shutdown()
-        return
+    # if not early_lazy_check(model, env):
+    #     print("\n🛑 Eğitim durduruldu: Lazy strategy detected!")
+    #     training_logger._flush()
+    #     env.close()
+    #     rclpy.shutdown()
+    #     return
 
     # ═══════════════════════════════════════════════════════════════════════
     # PHASE 2: Kalan 980k
     # ═══════════════════════════════════════════════════════════════════════
-    print("\n✅ Phase 1 geçildi, devam ediliyor...")
-    print("🚀 PHASE 2: Remaining 980k timesteps\n")
+    # print("\n✅ Phase 1 geçildi, devam ediliyor...")
+    # print("🚀 PHASE 2: Remaining 980k timesteps\n")
 
-    model.learn(
-        total_timesteps=164_800,
-        callback=callbacks,
-        reset_num_timesteps=False,
-        progress_bar=True,
-    )
-
+    # model.learn(
+    #     total_timesteps=164_800,
+    #     callback=callbacks,
+    #     reset_num_timesteps=False,
+    #     progress_bar=True,
+    # )
+    
     # ─── 5. Final Save ─────────────────────────────────────────────────────
     model.save(os.path.join(models_dir, "final_model"))
     env.save(os.path.join(models_dir, "vec_normalize.pkl"))

@@ -5,5 +5,5 @@ from uav_threat_agent.envs.curriculum_env import ThreatAgentEnv
 register(
     id='ThreatAgent-v11',
     entry_point='uav_threat_agent.envs.curriculum_env:ThreatAgentEnv',
-    max_episode_steps=2048, # İsteğe bağlı: Bir bölüm en fazla kaç adım sürsün
+    max_episode_steps=4096, # İsteğe bağlı: Bir bölüm en fazla kaç adım sürsün
 )
