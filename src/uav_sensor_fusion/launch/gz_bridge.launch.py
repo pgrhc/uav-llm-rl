@@ -174,6 +174,13 @@ def generate_launch_description():
         output="screen",
         parameters=[{'use_sim_time': True}]
     )
+    threat_encoder_v2 = Node(
+        package="uav_sensor_fusion",
+        executable="threat_encoder_v2",
+        name="threat_encoder_v2",
+        output="screen",
+        parameters=[{'use_sim_time': True}]
+    )
     
     return LaunchDescription([
         SetParameter(name="use_sim_time", value=True),
@@ -194,6 +201,8 @@ def generate_launch_description():
         yolo_node,
         #bev_node,
         bev_proj_node,
-        threat_encoder_node
+        #threat_encoder_node,
+        threat_encoder_v2,
+
         
     ])

@@ -297,7 +297,7 @@ def spawn_multiple_actors(walls, rows, cols):
         name = f"human_{idx}_{random.randint(100,999)}"
         sdf = build_actor_sdf(name, skin_uri, anim_uri, x1, y1, x2, y2, is_horiz)
         
-        remove_entity(name, "ACTOR")
+        # remove_entity(name, "ACTOR")
         spawn_sdf_model(name, sdf)
         print(f"✅ Actor[{idx}] spawn edildi.")
 
@@ -319,7 +319,7 @@ def save_walls(walls, path=WALLS_SAVE_PATH):
 
 if __name__ == "__main__":
     print("🧩 Maze oluşturuluyor...")
-    remove_entity("maze_current", "MODEL")
+    # remove_entity("maze_current", "MODEL")
 
     walls = generate_perfect_maze(ROWS, COLS)
 

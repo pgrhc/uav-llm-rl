@@ -11,6 +11,11 @@ import time
 import cv2
 import math
 import uuid
+import json
+import subprocess
+
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from nav_msgs.msg import Odometry
 
 class ThreatAgentEnv(gym.Env):
     """
@@ -20,7 +25,20 @@ class ThreatAgentEnv(gym.Env):
     - Stage 2 (50k-100k): Learn distance-based scoring
     - Stage 3 (100k+): Full complexity
     """
-    
+
+    # Dynamic actor collision — dual-layer (YOLO + analytical)
+    ACTOR_COLLISION_RADIUS = 1.5
+    ACTOR_COLLISION_Z_MAX = 3.5   # actor feet=0.9, head≈2.7m + margin
+    ACTOR_JSON_PATH = "/home/ubuntu/Desktop/maze_actors.json"
+    COLLISION_LOG_INTERVAL = 50   # her N step'te durum logu
+
+    # Soft reset — verify with:  gz model --list
+    DRONE_MODEL_NAME = "x500_mono_cam"
+    SPAWN_POSITION = (0.0, 0.0, 1.5)
+    GZ_WORLD_NAME = "default"
+    RESET_STABILIZE_SEC = 2.0
+    MAX_EPISODE_STEPS = 500
+
     def __init__(self, curriculum_stage=1):
         super(ThreatAgentEnv, self).__init__()
         
@@ -82,9 +100,27 @@ class ThreatAgentEnv(gym.Env):
         self.sub_yolo = self.node.create_subscription(
             Image, '/bev/yolo_layer', self.yolo_callback, 10)
 
+        # Drone position (for collision detection)
+        self.drone_x = 0.0
+        self.drone_y = 0.0
+        self.drone_z = 0.0
+        self.step_count = 0
+        self.actor_trajectories = []
+        self.actor_ref_time = time.time()
+
+        qos_odom = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            depth=10,
+        )
+        self.sub_odom = self.node.create_subscription(
+            Odometry, '/odometry/filtered', self._cb_odom, qos_odom)
+
         self.thread = threading.Thread(target=self._spin_node, daemon=True)
         self.thread.start()
         time.sleep(1.0)
+
+        self._load_actor_data()
 
     def _spin_node(self):
         self._running = True
@@ -196,8 +232,12 @@ class ThreatAgentEnv(gym.Env):
         super().reset(seed=seed)
         self.prev_action = np.zeros(self.K, dtype=np.float32)
         self.prev_target_risk = np.zeros(self.K, dtype=np.float32)
-        
-        self._wait_for_obs(timeout=1.0)
+        self.step_count = 0
+
+        self._soft_reset_drone()
+        self._load_actor_data()
+        self._wait_for_obs(timeout=2.0)
+
         observation = {
             "bev_image": self.bev_stack.copy(),
             "state_vector": self.latest_vector.copy()
@@ -205,6 +245,7 @@ class ThreatAgentEnv(gym.Env):
         return observation, {}
 
     def step(self, action):
+        self.step_count += 1
         self._wait_for_obs(timeout=0.2)
         
         obs = {
@@ -222,8 +263,16 @@ class ThreatAgentEnv(gym.Env):
         
         self.prev_action = action.copy()
         
-        terminated = False 
-        truncated = False 
+        terminated = False
+        truncated = False
+
+        if self._check_actor_collision():
+            terminated = True
+            info_data["actor_collision"] = True
+
+        if self.step_count >= self.MAX_EPISODE_STEPS:
+            truncated = True
+            info_data["timeout"] = True
         
         return obs, reward, terminated, truncated, info_data
 
@@ -597,6 +646,135 @@ class ThreatAgentEnv(gym.Env):
             
         return total_reward, info_data
 
+
+    # ------------------------------------------------------------------ #
+    # Dynamic actor collision & soft reset
+    # ------------------------------------------------------------------ #
+    def _cb_odom(self, msg):
+        self.drone_x = msg.pose.pose.position.x
+        self.drone_y = msg.pose.pose.position.y
+        self.drone_z = msg.pose.pose.position.z
+
+    def _load_actor_data(self):
+        try:
+            with open(self.ACTOR_JSON_PATH, "r") as f:
+                data = json.load(f)
+            self.actor_trajectories = data.get("actors", [])
+            self.actor_ref_time = data.get("spawn_time", time.time())
+            self.node.get_logger().info(
+                f"Actor trajectories loaded: {len(self.actor_trajectories)}"
+            )
+        except FileNotFoundError:
+            self.node.get_logger().info(
+                "maze_actors.json not found — analytical collision disabled"
+            )
+            self.actor_trajectories = []
+        except Exception as e:
+            self.node.get_logger().warn(f"Actor data load error: {e}")
+            self.actor_trajectories = []
+
+    def _compute_actor_positions(self):
+        elapsed = time.time() - self.actor_ref_time
+        positions = []
+        for a in self.actor_trajectories:
+            x1, y1 = a["x1"], a["y1"]
+            x2, y2 = a["x2"], a["y2"]
+            period = a["period"]
+            speed = a["speed"]
+            dx, dy = x2 - x1, y2 - y1
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist < 1e-6 or period < 1e-6:
+                positions.append((x1, y1))
+                continue
+            duration = dist / speed
+            t_mod = elapsed % period
+            if t_mod < duration:
+                frac = t_mod / duration
+                positions.append((x1 + frac * dx, y1 + frac * dy))
+            elif t_mod < duration + 0.5:
+                positions.append((x2, y2))
+            elif t_mod < 2.0 * duration + 0.5:
+                frac = (t_mod - duration - 0.5) / duration
+                positions.append((x2 - frac * dx, y2 - frac * dy))
+            else:
+                positions.append((x1, y1))
+        return positions
+
+    def _check_actor_collision(self) -> bool:
+        """Dual-layer: YOLO (threat_vector) + analytical trajectory."""
+        log = self.node.get_logger()
+        hit_source = None
+
+        # Layer 1: YOLO detections
+        min_yolo_r = float("inf")
+        vec = self.latest_vector
+        for i in range(5):
+            base = 3 + i * 17
+            if base + 16 >= len(vec):
+                continue
+            is_valid = vec[base + 16]
+            if is_valid < 0.5:
+                continue
+            r_3d = vec[base + 4]
+            min_yolo_r = min(min_yolo_r, r_3d)
+            if r_3d < self.ACTOR_COLLISION_RADIUS:
+                hit_source = f"YOLO r_3d={r_3d:.2f}"
+
+        # Layer 2: analytical trajectory
+        min_analytic_d = float("inf")
+        if hit_source is None and self.drone_z <= self.ACTOR_COLLISION_Z_MAX:
+            for ax, ay in self._compute_actor_positions():
+                dx = self.drone_x - ax
+                dy = self.drone_y - ay
+                d = math.sqrt(dx * dx + dy * dy)
+                min_analytic_d = min(min_analytic_d, d)
+                if d < self.ACTOR_COLLISION_RADIUS:
+                    hit_source = f"ANALYTIC d={d:.2f}"
+                    break
+
+        # Periodic status log
+        if self.step_count % self.COLLISION_LOG_INTERVAL == 0:
+            log.info(
+                f"[COL] step={self.step_count} "
+                f"drone=({self.drone_x:.1f},{self.drone_y:.1f},z={self.drone_z:.1f}) "
+                f"yolo_min={min_yolo_r:.1f} analytic_min={min_analytic_d:.1f} "
+                f"actors={len(self.actor_trajectories)}"
+            )
+
+        if hit_source:
+            log.warn(
+                f"COLLISION DETECTED [{hit_source}] "
+                f"drone=({self.drone_x:.1f},{self.drone_y:.1f},z={self.drone_z:.1f}) "
+                f"step={self.step_count} → episode terminated, resetting"
+            )
+            return True
+        return False
+
+    def _soft_reset_drone(self):
+        x, y, z = self.SPAWN_POSITION
+        cmd = (
+            f"gz service -s /world/{self.GZ_WORLD_NAME}/set_pose "
+            f"--reqtype gz.msgs.Pose "
+            f"--reptype gz.msgs.Boolean "
+            f"--timeout 1000 "
+            f"--req 'name: \"{self.DRONE_MODEL_NAME}\", "
+            f"position: {{x: {x}, y: {y}, z: {z}}}, "
+            f"orientation: {{w: 1.0}}'"
+        )
+        try:
+            result = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=3
+            )
+            if result.returncode != 0:
+                self.node.get_logger().warn(
+                    f"set_pose failed (rc={result.returncode}): {result.stderr.strip()}"
+                )
+        except subprocess.TimeoutExpired:
+            self.node.get_logger().warn("set_pose timed out — continuing anyway")
+        except Exception as e:
+            self.node.get_logger().warn(f"Soft reset error: {e}")
+
+        time.sleep(self.RESET_STABILIZE_SEC)
 
     def close(self):
         self._running = False

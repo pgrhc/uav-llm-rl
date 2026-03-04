@@ -35,6 +35,8 @@ setup(
             "yolo_node = uav_sensor_fusion.yolo_node:main",
             "bev_projection_node = uav_sensor_fusion.bev_projection_node:main",
             "threat_encoder_node = uav_sensor_fusion.threat_encoder_node:main",
+            "threat_encoder_v2 = uav_sensor_fusion.threat_encoder_v2:main",
+            
              
         ],
     },

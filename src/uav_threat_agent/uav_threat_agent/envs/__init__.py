@@ -1,9 +1,9 @@
 from gymnasium.envs.registration import register
-from uav_threat_agent.envs.curriculum_env import ThreatAgentEnv
+from uav_threat_agent.envs.env_v2 import ThreatAgentEnv
 
 # Ortamı Gym'e kaydediyoruz
 register(
-    id='ThreatAgent-v11',
-    entry_point='uav_threat_agent.envs.curriculum_env:ThreatAgentEnv',
-    max_episode_steps=4096, # İsteğe bağlı: Bir bölüm en fazla kaç adım sürsün
+    id='ThreatAgent-v12',
+    entry_point='uav_threat_agent.envs.env_v2:ThreatAgentEnv',
+    max_episode_steps=2048, # İsteğe bağlı: Bir bölüm en fazla kaç adım sürsün
 )
