@@ -29,6 +29,8 @@ setup(
             'pretrained_train = uav_threat_agent.nodes.pretrained_model_node:main',
             "curriculum_train = uav_threat_agent.nodes.curriculum_training:main",
             "train_v2 = uav_threat_agent.nodes.train_v2:main",
+            "pretrain_v2 = uav_threat_agent.nodes.pretrain_v2:main",
+            "target_node = uav_threat_agent.nodes.target_node:main",
         ],
     },
 )

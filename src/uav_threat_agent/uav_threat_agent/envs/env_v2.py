@@ -285,6 +285,11 @@ class ThreatAgentEnv(gym.Env):
                 
                 diff = abs(current_score - target_risk)
                 alignment_reward = 1.0 - 2.0 * diff
+                if target_risk > 0.5 and current_score > 0.5:
+                    alignment_reward += 0.2
+
+                if target_risk > 0.5 and current_score < 0.5:
+                    alignment_reward -= 0.3
                 total_reward += alignment_reward
                 
             else:

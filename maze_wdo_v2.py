@@ -16,7 +16,7 @@ random.seed(time.time_ns())
 
 # --- DÜZELTME 1: İNSAN SAYISI AYARI ---
 # Labirentteki hücrelerin %15'ine insan koy (Eskiden 0.03 idi)
-ACTOR_DENSITY = 0.3  
+ACTOR_DENSITY = 0.5  
 # Drone Spawn Merkezi
 DRONE_SPAWN_CELL = (ROWS // 2, COLS // 2)
 # İnsanların spawn noktasına yaklaşmaması gereken mesafe (hücre cinsinden)
