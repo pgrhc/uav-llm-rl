@@ -44,7 +44,7 @@ class CostmapPatchNode(Node):
 
         qos_reliable = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.VOLATILE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
             depth=10
         )
 

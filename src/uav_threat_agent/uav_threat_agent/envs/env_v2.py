@@ -7,33 +7,14 @@ from std_msgs.msg import Float32MultiArray
 import threading
 import time
 import uuid
+import os
+import cv2
+import imageio.v2 as imageio
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image
 
 class ThreatAgentEnv(gym.Env):
-    """
-    Threat Agent Environment V2 - Aligned with ThreatEncoderNode V2
-    ================================================================
-    CHANGES FROM V10:
-    - BEV Image REMOVED (as per mentor feedback)
-    - State vector: 88 → 74 elements
-    - Token format: 17 → 7 features
-    - LiDAR data integrated (36 sectors)
-    - Simplified observation space (vector only)
-    
-    State Vector V2 (74 elements):
-    [0:3]   UAV state: speed_norm, yaw_sin, yaw_cos
-    [3:39]  LiDAR: 36 × normalized distances
-    [39:74] Objects: 5 tracks × 7 features
-    
-    Token Format V2 (7 features):
-    0: class_id
-    1: dist
-    2: closing_speed
-    3: sin(bearing)
-    4: cos(bearing)
-    5: confidence
-    6: is_valid
-    """
-    
     def __init__(self):
         super(ThreatAgentEnv, self).__init__()
         
@@ -70,10 +51,127 @@ class ThreatAgentEnv(gym.Env):
         self.cond = threading.Condition()
         self.sub_vec = self.node.create_subscription(
             Float32MultiArray, '/threat/state_vec', self.vec_callback, 10)
+        self.sub_img = self.node.create_subscription(
+            Image,
+            '/bev/image',
+            self.img_callback,
+            10
+        )
+           
+        self.max_episode_steps = 2048
+        self.episode_idx = 0
+        self.episode_step = 0
+        self.global_step = 0
+
+        self.save_bev_gifs = True
+        self.frame_save_interval = 32
+        self.keep_png_frames = False
+
+        self.base_frame_dir = "/home/ubuntu/Desktop/ros2_env/bev_episode_frames"
+        self.base_gif_dir = "/home/ubuntu/Desktop/ros2_env/bev_episode_gifs"
+        os.makedirs(self.base_frame_dir, exist_ok=True)
+        os.makedirs(self.base_gif_dir, exist_ok=True)
+
+        self.bridge = CvBridge()
+        self.latest_bev = None
+        self.new_img = False
 
         self.thread = threading.Thread(target=self._spin_node, daemon=True)
         self.thread.start()
         time.sleep(1.0)
+
+
+    def img_callback(self, msg):
+        try:
+            cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            self.latest_bev = cv_img
+            self.new_img = True
+        except Exception as e:
+            self.node.get_logger().warn(f"img_callback hatası: {e}")
+
+    def _get_episode_frame_dir(self):
+        ep_dir = os.path.join(self.base_frame_dir, f"episode_{self.episode_idx:03d}")
+        os.makedirs(ep_dir, exist_ok=True)
+        return ep_dir
+    
+    def _save_bev_frame(self, reward=None, metrics=None):
+        if not self.save_bev_gifs:
+            return
+
+        if self.latest_bev is None:
+            return
+
+        if self.episode_step % self.frame_save_interval != 0:
+            return
+
+        vis = self.latest_bev.copy()
+
+        cv2.putText(vis, f"Episode: {self.episode_idx}", (10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(vis, f"Ep step: {self.episode_step}", (10, 55),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(vis, f"Global step: {self.global_step}", (10, 85),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        if reward is not None:
+            cv2.putText(vis, f"Reward: {reward:.3f}", (10, 115),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        y = 145
+
+        if metrics is not None:
+
+            cv2.putText(vis, f"valid_obj: {metrics['valid_obj_count']}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+            y += 25
+
+            cv2.putText(vis, f"risk_cov: {metrics['high_risk_coverage']:.2f}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+            y += 25
+
+            cv2.putText(vis, f"score_var: {metrics['mean_score_var']:.3f}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+            y += 25
+
+            cv2.putText(vis, f"jitter: {metrics['temporal_jitter']:.3f}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+            y += 25
+
+            cv2.putText(vis, f"drone_seen: {metrics['drone_seen_count']}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+            y += 25
+
+            cv2.putText(vis, f"person_seen: {metrics['person_seen_count']}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+
+        ep_dir = self._get_episode_frame_dir()
+        frame_path = os.path.join(ep_dir, f"frame_{self.episode_step:04d}.png")
+        cv2.imwrite(frame_path, vis)
+
+    def _make_episode_gif(self):
+        ep_dir = self._get_episode_frame_dir()
+        files = sorted([f for f in os.listdir(ep_dir) if f.endswith(".png")])
+
+        if not files:
+            self.node.get_logger().warn(f"Episode {self.episode_idx} için frame bulunamadı.")
+            return
+
+        images = []
+        for f in files:
+            img_path = os.path.join(ep_dir, f)
+            images.append(imageio.imread(img_path))
+
+        gif_path = os.path.join(
+            self.base_gif_dir,
+            f"episode_{self.episode_idx:03d}.gif"
+        )
+
+        imageio.mimsave(gif_path, images, duration=0.12)
+        self.node.get_logger().info(f"GIF kaydedildi: {gif_path}")
+
+        if not self.keep_png_frames:
+            for f in files:
+                os.remove(os.path.join(ep_dir, f))
+            os.rmdir(ep_dir)
 
     def _spin_node(self):
         self._running = True
@@ -113,13 +211,6 @@ class ThreatAgentEnv(gym.Env):
             return vector
 
     def _apply_curriculum_mask(self, vector):
-        """
-        Curriculum Learning: Nesneleri kademeli olarak tanıt.
-        Stage 0: Tüm nesneler görünür
-        Stage 1: Sadece Person (class_id=4)
-        Stage 2: Person + Unknown (class_id=0)
-        Stage 3: Tüm nesneler
-        """
         if not self.enable_curriculum or self.curriculum_stage == 3:
             return vector
         
@@ -187,7 +278,7 @@ class ThreatAgentEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.prev_action = np.zeros(self.K, dtype=np.float32)
-        
+        self.episode_step = 0
         self._wait_for_obs(timeout=1.0)
         observation = self.latest_vector.copy()
         
@@ -197,13 +288,19 @@ class ThreatAgentEnv(gym.Env):
         self._wait_for_obs(timeout=0.2)
         
         obs = self.latest_vector.copy()
-        
         reward, info_data = self.calculate_reward_and_info(action, obs)
         
+        self._save_bev_frame(reward=reward,metrics=info_data["metrics"])
         self.prev_action = action.copy()
-        
+        self.global_step += 1
+        self.episode_step += 1
+
         terminated = False 
         truncated = False 
+        if self.episode_step >= self.max_episode_steps:
+            truncated = True
+            self._make_episode_gif()
+            self.episode_idx += 1
         
         return obs, reward, terminated, truncated, info_data
 

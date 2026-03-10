@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 """
-Route Planning Agent — Gazebo-based Gymnasium Environment
+Route Planning Agent — Gazebo-based Gymnasium Environment  (Faz 1)
 
 Observation:
-    costmap_patch  : (1, 64, 64)  — CNN input from /route/costmap_patch
-    threat_vector  : (88,)        — MLP input from /threat/state_vec
-    threat_scores  : (5,)         — MLP input from /threat/output_scores (tehdit ajanı)
-    goal_state     : (7,)         — MLP input (rel_goal, dist, speed, yaw)
+    costmap_patch  : (1, 64, 64)  — CNN input   /route/costmap_patch
+    threat_vector  : (74,)        — MLP input   /threat/state_vec
+    threat_scores  : (5,)         — MLP input   /threat/target_scores
+    goal_state     : (7,)         — MLP input   (rel_goal, dist, speed, yaw)
+    a_star_path    : (10,)        — MLP input   /plan  (5 wp × rel_x,rel_y)
 
 Action:
     Box(4,) → (dx, dy, dz, dyaw)  scaled to physical limits
 
-Reward:
-    Goal progress, collision penalty, threat proximity penalty,
-    smoothness penalty, goal reached bonus, time penalty.
+Reward  (Faz 1 — Çekirdek):
+    r_progress   +2.0 × (prev_dist − curr_dist)
+    r_goal       +50.0
+    r_collision  −100.0   (costmap lethal VEYA LiDAR < 0.4 m)
+    r_time       −0.1
+    r_smooth     −0.3 × ‖Δaction‖
 """
 
 import gymnasium as gym
@@ -29,7 +33,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 
 from std_msgs.msg import Float32MultiArray
 from sensor_msgs.msg import Image
-from nav_msgs.msg import Odometry, OccupancyGrid
+from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from geometry_msgs.msg import PoseStamped
 from cv_bridge import CvBridge
 import cv2
@@ -38,38 +42,44 @@ import cv2
 class RouteEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    # Physical limits
-    STEP_SIZE = 0.3        # max horizontal delta (m)
-    Z_STEP = 0.2           # max vertical delta (m)
-    MAX_YAW_RATE = 0.52    # ~30 deg in radians
-    GOAL_TOLERANCE = 0.5   # m — episode success
-    SAFETY_RADIUS = 0.5    # m — min obstacle distance
-    LETHAL_THRESHOLD = 90  # costmap value (0-100)
-    MAX_EPISODE_STEPS = 500
-    MAX_GOAL_DIST = 30.0   # for normalization
-    MAX_SPEED = 5.0        # for normalization
+    STEP_SIZE = 0.3
+    Z_STEP = 0.2
+    MAX_YAW_RATE = 0.52
+    GOAL_TOLERANCE = 0.5
+    SAFETY_RADIUS = 0.5
+    LETHAL_THRESHOLD = 90
+    MAX_EPISODE_STEPS = 1000
+    MAX_GOAL_DIST = 30.0
+    MAX_SPEED = 5.0
+
+    LIDAR_MAX_RANGE = 30.0
+    LIDAR_COLLISION_M = 0.4
+    LIDAR_START_IDX = 3
+    LIDAR_END_IDX = 39
+    NUM_PATH_WPS = 5
 
     def __init__(self):
         super().__init__()
 
-        # --- Action space: (dx, dy, dz, dyaw) in [-1, 1] ---
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(4,), dtype=np.float32
         )
 
-        # --- Observation space ---
         self.observation_space = spaces.Dict({
             "costmap_patch": spaces.Box(
                 low=0.0, high=1.0, shape=(1, 64, 64), dtype=np.float32
             ),
             "threat_vector": spaces.Box(
-                low=-np.inf, high=np.inf, shape=(88,), dtype=np.float32
+                low=-np.inf, high=np.inf, shape=(74,), dtype=np.float32
             ),
             "threat_scores": spaces.Box(
                 low=0.0, high=1.0, shape=(5,), dtype=np.float32
             ),
             "goal_state": spaces.Box(
                 low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32
+            ),
+            "a_star_path": spaces.Box(
+                low=-np.inf, high=np.inf, shape=(10,), dtype=np.float32
             ),
         })
 
@@ -90,11 +100,12 @@ class RouteEnv(gym.Env):
 
         # Sensor buffers
         self.costmap_patch = np.zeros((1, 64, 64), dtype=np.float32)
-        self.threat_vector = np.zeros(88, dtype=np.float32)
-        self.threat_scores = np.zeros(5, dtype=np.float32)  # /threat/output_scores
+        self.threat_vector = np.zeros(74, dtype=np.float32)
+        self.threat_scores = np.zeros(5, dtype=np.float32)
+        self.a_star_poses = []
         self.latest_costmap = None
 
-        # Freshness flags (threat_scores optional — tehdit ajanı yoksa 0 kalır)
+        # Freshness flags
         self.new_patch = False
         self.new_threat = False
         self.new_odom = False
@@ -114,18 +125,17 @@ class RouteEnv(gym.Env):
             durability=DurabilityPolicy.VOLATILE,
             depth=10,
         )
-        qos_reliable = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.VOLATILE,
-            depth=10,
-        )
         qos_transient = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             depth=1,
         )
+        qos_reliable = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+            depth=10,
+        )
 
-        # Subscribers
         self.node.create_subscription(
             Image, "/route/costmap_patch", self._cb_patch, 10
         )
@@ -133,7 +143,7 @@ class RouteEnv(gym.Env):
             Float32MultiArray, "/threat/state_vec", self._cb_threat, 10
         )
         self.node.create_subscription(
-            Float32MultiArray, "/threat/output_scores", self._cb_threat_scores, 10
+            Float32MultiArray, "/threat/target_scores", self._cb_threat_scores, 10
         )
         self.node.create_subscription(
             Odometry, "/odometry/filtered", self._cb_odom, qos_sensor
@@ -145,13 +155,14 @@ class RouteEnv(gym.Env):
             OccupancyGrid, "/local_costmap/costmap",
             self._cb_costmap, qos_reliable
         )
+        self.node.create_subscription(
+            Path, "/plan", self._cb_plan, qos_sensor
+        )
 
-        # Publisher — RL agent's desired waypoint
         self.waypoint_pub = self.node.create_publisher(
             PoseStamped, "/route/waypoint_desired", 10
         )
 
-        # Spin thread
         self._spin_thread = threading.Thread(target=self._spin, daemon=True)
         self._spin_thread.start()
         time.sleep(1.0)
@@ -180,14 +191,13 @@ class RouteEnv(gym.Env):
 
     def _cb_threat(self, msg: Float32MultiArray):
         data = np.array(msg.data, dtype=np.float32)
-        if data.shape[0] == 88:
+        if data.shape[0] == 74:
             with self.cond:
                 self.threat_vector = data
                 self.new_threat = True
                 self.cond.notify_all()
 
     def _cb_threat_scores(self, msg: Float32MultiArray):
-        """Tehdit ajanından gelen Top-K skorlar (0–1). Ajan çalışmıyorsa 0 kalır."""
         data = np.array(msg.data, dtype=np.float32)
         n = min(len(data), 5)
         with self.cond:
@@ -225,6 +235,11 @@ class RouteEnv(gym.Env):
     def _cb_costmap(self, msg: OccupancyGrid):
         self.latest_costmap = msg
 
+    def _cb_plan(self, msg: Path):
+        self.a_star_poses = [
+            (p.pose.position.x, p.pose.position.y) for p in msg.poses
+        ]
+
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
@@ -261,12 +276,42 @@ class RouteEnv(gym.Env):
             math.cos(self.drone_yaw),
         ], dtype=np.float32)
 
+    def _build_a_star_obs(self) -> np.ndarray:
+        """Drone'un önündeki en yakın 5 A* waypoint'ini relatif koordinat olarak döndür."""
+        result = np.zeros(self.NUM_PATH_WPS * 2, dtype=np.float32)
+        if not self.a_star_poses:
+            return result
+
+        dx = self.drone_x
+        dy = self.drone_y
+
+        nearest_idx = 0
+        best_dist = float("inf")
+        for i, (px, py) in enumerate(self.a_star_poses):
+            d = (px - dx) ** 2 + (py - dy) ** 2
+            if d < best_dist:
+                best_dist = d
+                nearest_idx = i
+
+        start = nearest_idx + 1
+        count = 0
+        for i in range(start, len(self.a_star_poses)):
+            if count >= self.NUM_PATH_WPS:
+                break
+            wx, wy = self.a_star_poses[i]
+            result[count * 2] = wx - dx
+            result[count * 2 + 1] = wy - dy
+            count += 1
+
+        return result
+
     def _get_obs(self) -> dict:
         return {
             "costmap_patch": self.costmap_patch.copy(),
             "threat_vector": self.threat_vector.copy(),
             "threat_scores": np.clip(self.threat_scores.copy(), 0.0, 1.0),
             "goal_state": self._build_goal_state(),
+            "a_star_path": self._build_a_star_obs(),
         }
 
     def _dist_to_goal(self) -> float:
@@ -276,8 +321,15 @@ class RouteEnv(gym.Env):
         dy = self.goal_y - self.drone_y
         return math.sqrt(dx * dx + dy * dy)
 
-    def _check_collision(self, x: float, y: float) -> bool:
-        """Check if (x, y) hits a lethal cell in the raw costmap."""
+    def _check_collision(self, wp_x: float, wp_y: float) -> bool:
+        """Costmap lethal cell OR LiDAR proximity < 0.4 m."""
+        if self._check_costmap_collision(wp_x, wp_y):
+            return True
+        if self._check_lidar_collision():
+            return True
+        return False
+
+    def _check_costmap_collision(self, x: float, y: float) -> bool:
         cm = self.latest_costmap
         if cm is None:
             return False
@@ -295,19 +347,12 @@ class RouteEnv(gym.Env):
         idx = py * w + px
         return cm.data[idx] >= self.LETHAL_THRESHOLD
 
-    def _threat_proximity_penalty(self) -> float:
-        """Penalty based on nearest threat distance from threat_vector."""
-        vec = self.threat_vector
-        penalty = 0.0
-        for i in range(5):
-            base = 3 + i * 17
-            is_valid = vec[base + 16] if base + 16 < len(vec) else 0.0
-            if is_valid < 0.5:
-                continue
-            r_3d = vec[base + 4]
-            if r_3d < 3.0:
-                penalty += (3.0 - r_3d) / 3.0
-        return penalty
+    def _check_lidar_collision(self) -> bool:
+        lidar = self.threat_vector[self.LIDAR_START_IDX:self.LIDAR_END_IDX]
+        if len(lidar) == 0:
+            return False
+        min_dist_m = float(np.min(lidar)) * self.LIDAR_MAX_RANGE
+        return min_dist_m < self.LIDAR_COLLISION_M
 
     def _publish_waypoint(self, wx: float, wy: float, wz: float, wyaw: float):
         msg = PoseStamped()
@@ -337,13 +382,11 @@ class RouteEnv(gym.Env):
         self.step_count += 1
         action = np.clip(action, -1.0, 1.0)
 
-        # Scale action to physical units
         dx = float(action[0]) * self.STEP_SIZE
         dy = float(action[1]) * self.STEP_SIZE
         dz = float(action[2]) * self.Z_STEP
         dyaw = float(action[3]) * self.MAX_YAW_RATE
 
-        # Compute absolute waypoint
         cos_yaw = math.cos(self.drone_yaw)
         sin_yaw = math.sin(self.drone_yaw)
         world_dx = cos_yaw * dx - sin_yaw * dy
@@ -354,13 +397,10 @@ class RouteEnv(gym.Env):
         wp_z = self.drone_z + dz
         wp_yaw = self.drone_yaw + dyaw
 
-        # Publish waypoint to the rest of the pipeline
         self._publish_waypoint(wp_x, wp_y, wp_z, wp_yaw)
-
-        # Wait for sensors to update after movement
         self._wait_obs(timeout=0.3)
 
-        # --- Reward computation ---
+        # ---------- Faz 1 reward ----------
         reward = 0.0
         terminated = False
         truncated = False
@@ -368,35 +408,31 @@ class RouteEnv(gym.Env):
 
         dist = self._dist_to_goal()
 
-        # 1. Goal progress
+        # r_progress
         if self.prev_dist_to_goal is not None and self.goal_x is not None:
             progress = self.prev_dist_to_goal - dist
             reward += 2.0 * progress
 
-        # 2. Goal reached
+        # r_goal
         if dist < self.GOAL_TOLERANCE:
             reward += 50.0
             terminated = True
             info["success"] = True
 
-        # 3. Collision
+        # r_collision
         if self._check_collision(wp_x, wp_y):
             reward -= 100.0
             terminated = True
             info["collision"] = True
 
-        # 4. Threat proximity
-        threat_pen = self._threat_proximity_penalty()
-        reward -= 2.0 * threat_pen
-
-        # 5. Smoothness
+        # r_smooth
         action_delta = np.linalg.norm(action - self.prev_action)
         reward -= 0.3 * action_delta
 
-        # 6. Time penalty
-        reward -= 0.1
+        # r_time
+        reward -= 0.05
 
-        # 7. Truncation (max steps)
+        # truncation
         if self.step_count >= self.MAX_EPISODE_STEPS:
             truncated = True
             info["timeout"] = True

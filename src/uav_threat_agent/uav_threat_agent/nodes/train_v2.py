@@ -340,7 +340,7 @@ def main(args=None):
         rclpy.init(args=args)
 
     print("=" * 70)
-    print("🚀 THREAT AGENT EĞİTİMİ V2 (MENTOR OPTIMIZED)")
+    print("🚀 THREAT AGENT EĞİTİMİ V2")
     print("=" * 70)
     signal.signal(signal.SIGINT, signal_handler)
     SEED = 42

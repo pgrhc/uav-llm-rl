@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-Route Agent Inference Node
+Route Agent Inference Node  (Faz 1 v2)
 
-Loads a trained PPO model and publishes waypoints at planning rate.
-Replaces the heuristic_planner_node after training.
+Loads a trained PPO model + VecNormalize stats and publishes waypoints.
 
 Input:
-    /route/costmap_patch  (sensor_msgs/Image)
-    /threat/state_vec     (std_msgs/Float32MultiArray)
-    /odometry/filtered    (nav_msgs/Odometry)
-    /goal_pose            (geometry_msgs/PoseStamped)
+    /route/costmap_patch    (sensor_msgs/Image)
+    /threat/state_vec       (std_msgs/Float32MultiArray)   74-dim
+    /threat/target_scores   (std_msgs/Float32MultiArray)   5-dim
+    /odometry/filtered      (nav_msgs/Odometry)
+    /goal_pose              (geometry_msgs/PoseStamped)
+    /plan                   (nav_msgs/Path)                A* reference
 Output:
     /route/waypoint_desired (geometry_msgs/PoseStamped)
 """
@@ -17,6 +18,8 @@ Output:
 import gymnasium as gym
 import uav_route_planner.envs  # triggers register()
 from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import VecNormalize
 import rclpy
 import os
 import sys
@@ -26,11 +29,12 @@ def main(args=None):
     if not rclpy.ok():
         rclpy.init(args=args)
 
-    # Model path — pass as argument or use default
     if len(sys.argv) > 1:
         model_path = sys.argv[1]
     else:
-        model_path = "models/RoutePPO/route_ppo_50000"
+        model_path = "models/RoutePPO_v2/route_ppo_v2_500000"
+
+    vecnorm_path = model_path.replace("route_ppo_v2_", "vecnorm_v2_") + ".pkl"
 
     if not os.path.exists(model_path) and not os.path.exists(model_path + ".zip"):
         print(f"HATA: Model dosyası bulunamadı: {model_path}")
@@ -38,11 +42,17 @@ def main(args=None):
 
     print("--- ROTA AJANI BAŞLATILIYOR ---")
 
-    # 1. Environment (provides ROS subscriptions + waypoint publishing)
-    env = gym.make("RouteAgent-v0")
-    obs, _ = env.reset()
+    vec_env = DummyVecEnv([lambda: gym.make("RouteAgent-v0")])
 
-    # 2. Load trained model
+    if os.path.exists(vecnorm_path):
+        env = VecNormalize.load(vecnorm_path, vec_env)
+        env.training = False
+        env.norm_reward = False
+        print(f"VecNormalize yüklendi: {vecnorm_path}")
+    else:
+        env = vec_env
+        print("VecNormalize bulunamadı, normalizasyonsuz çalışılıyor.")
+
     try:
         model = PPO.load(model_path, env=env)
         print(f"Model yüklendi: {model_path}")
@@ -50,18 +60,20 @@ def main(args=None):
         print(f"Model yükleme hatası: {e}")
         return
 
-    # 3. Inference loop
     print("--- ROTA PLANLAMA AKTİF ---")
+    obs = env.reset()
     try:
         while rclpy.ok():
             action, _state = model.predict(obs, deterministic=True)
-            obs, reward, terminated, truncated, info = env.step(action)
+            obs, reward, done, info = env.step(action)
 
-            if info.get("success"):
+            if isinstance(info, list) and info[0].get("success"):
                 print("Hedefe ulaşıldı!")
 
-            if terminated or truncated:
-                obs, _ = env.reset()
+            if isinstance(done, list):
+                done = done[0]
+            if done:
+                obs = env.reset()
 
     except KeyboardInterrupt:
         pass

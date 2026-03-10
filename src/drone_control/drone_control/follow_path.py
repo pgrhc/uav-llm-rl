@@ -12,6 +12,7 @@ from px4_msgs.msg import VehicleStatus  # EKLENEN
 
 from nav_msgs.msg import Path
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseStamped
 
 # ─── ADAPTİF AYARLAR ─────────────────────────────────────────────────────────
 MAX_LOOKAHEAD = 1.5
@@ -38,6 +39,10 @@ MAX_YAW_RATE = 0.6
 # ─── PİNG-PONG ÖNLEYİCİ AYARLAR (EKLENDİ) ────────────────────────────────────
 CLOSEST_SEARCH_WINDOW = 50
 PATH_RESET_DIST = 1.0
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─── ROUTE AGENT AYARLARI ──────────────────────────────────────────────────────
+ROUTE_WP_TIMEOUT = 2.0
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -70,6 +75,8 @@ class OffboardControl(Node):
             Odometry, '/odometry/filtered', self.odom_callback, qos_standard)
         self.path_sub = self.create_subscription(
             Path, '/plan', self.path_callback, qos_standard)
+        self.route_wp_sub = self.create_subscription(
+            PoseStamped, '/route/waypoint_desired', self.route_wp_callback, 10)
         
         # EKLENEN: Vehicle status subscriber
         self.vehicle_status_sub = self.create_subscription(
@@ -79,7 +86,7 @@ class OffboardControl(Node):
         self.current_path = []
         self.current_pos_enu = [0.0, 0.0, 0.0]
         self.current_yaw = 0.0
-        self.mission_altitude = -1.8
+        self.mission_altitude = -1.2
         self.last_valid_yaw = 0.0
 
         self.in_turn_mode = False
@@ -90,6 +97,9 @@ class OffboardControl(Node):
 
         self.last_plan_start = None
         self.last_plan_end = None
+
+        self.route_wp = None
+        self.route_wp_stamp = 0.0
 
         # EKLENEN: Durum takibi için
         self.vehicle_status = None
@@ -122,6 +132,11 @@ class OffboardControl(Node):
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
         self.current_yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    def route_wp_callback(self, msg: PoseStamped):
+        """Route agent'ın ürettiği tek waypoint'i al."""
+        self.route_wp = msg.pose
+        self.route_wp_stamp = self.get_clock().now().nanoseconds * 1e-9
 
     def path_callback(self, msg):
         poses = msg.poses
@@ -334,8 +349,40 @@ class OffboardControl(Node):
         else:
             return target_far, yaw_error
 
+    def _has_active_route_wp(self) -> bool:
+        if self.route_wp is None:
+            return False
+        now = self.get_clock().now().nanoseconds * 1e-9
+        return (now - self.route_wp_stamp) < ROUTE_WP_TIMEOUT
+
     def publish_trajectory_setpoint(self):
         msg = TrajectorySetpoint()
+
+        if self._has_active_route_wp():
+            target_enu = self.route_wp.position
+            q = self.route_wp.orientation
+            wp_yaw = math.atan2(
+                2.0 * (q.w * q.z + q.x * q.y),
+                1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+            )
+
+            t_north = target_enu.y
+            t_east = target_enu.x
+            t_down = -target_enu.z if target_enu.z > 0.0 else self.mission_altitude
+
+            self.sp_n = t_north
+            self.sp_e = t_east
+
+            msg.position = [t_north, t_east, t_down]
+            msg.velocity = [float('nan'), float('nan'), float('nan')]
+            msg.yaw = math.atan2(
+                math.sin(wp_yaw), math.cos(wp_yaw)
+            )
+            self.last_valid_yaw = msg.yaw
+
+            msg.timestamp = self.get_clock().now().nanoseconds // 1000
+            self.trajectory_setpoint_pub.publish(msg)
+            return
 
         target_enu, yaw_error = self.get_adaptive_lookahead_point()
 

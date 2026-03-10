@@ -16,11 +16,14 @@ random.seed(time.time_ns())
 
 # --- DÜZELTME 1: İNSAN SAYISI AYARI ---
 # Labirentteki hücrelerin %15'ine insan koy (Eskiden 0.03 idi)
-ACTOR_DENSITY = 1.0  
+ACTOR_DENSITY = 0.9  
 # Drone Spawn Merkezi
 DRONE_SPAWN_CELL = (ROWS // 2, COLS // 2)
 # İnsanların spawn noktasına yaklaşmaması gereken mesafe (hücre cinsinden)
-AVOID_SPAWN_RADIUS_CELLS = 2.0
+AVOID_SPAWN_RADIUS_CELLS = 1.0
+MIN_ACTORS = 180
+MAX_ACTORS = 200
+LONG_CORRIDOR_BONUS_THRESHOLD = 4
 
 # --- DOSYA YOLLARI ---
 SKIN_PATH = "/home/ubuntu/Desktop/gazebo_custom_models/actor_walking/walk.dae"
@@ -212,11 +215,61 @@ def corridor_to_world(corridor, rows, cols, cell_size):
     y2 = oy + (r2 + 0.5) * cell_size
     return x1, y1, x2, y2, is_horiz
 
+def corridor_len_cells(corridor):
+    (r1, c1), (r2, c2), _ = corridor
+    return abs(r2 - r1) + abs(c2 - c1) + 1
+
+def sample_points_on_corridor(corridor, rows, cols, cell_size, count):
+    (r1, c1), (r2, c2), is_horiz = corridor
+    spawn_r, spawn_c = DRONE_SPAWN_CELL
+    ox = - (spawn_c + 0.5) * cell_size
+    oy = - (spawn_r + 0.5) * cell_size
+
+    points = []
+
+    if is_horiz:
+        cols_list = list(range(min(c1, c2), max(c1, c2) + 1))
+        if len(cols_list) == 1:
+            cols_sample = [cols_list[0]] * count
+        else:
+            chosen = random.sample(cols_list, k=min(count, len(cols_list)))
+            while len(chosen) < count:
+                chosen.append(random.choice(cols_list))
+            cols_sample = chosen
+
+        for cc in cols_sample:
+            x = ox + (cc + 0.5) * cell_size
+            y = oy + (r1 + 0.5) * cell_size
+            points.append((x, y))
+
+    else:
+        rows_list = list(range(min(r1, r2), max(r1, r2) + 1))
+        if len(rows_list) == 1:
+            rows_sample = [rows_list[0]] * count
+        else:
+            chosen = random.sample(rows_list, k=min(count, len(rows_list)))
+            while len(chosen) < count:
+                chosen.append(random.choice(rows_list))
+            rows_sample = chosen
+
+        for rr in rows_sample:
+            x = ox + (c1 + 0.5) * cell_size
+            y = oy + (rr + 0.5) * cell_size
+            points.append((x, y))
+
+    return points
+
+
 def pick_actor_count(rows, cols):
     area = rows * cols
-    # %15 yoğunluk (Örn: 100 hücrede 15 insan)
-    n = max(1, int(area * ACTOR_DENSITY))
-    return min(n, 250) # Max sınırını da artırdım
+    n = int(area * ACTOR_DENSITY)
+
+    if n < MIN_ACTORS:
+        n = MIN_ACTORS
+    if n > MAX_ACTORS:
+        n = MAX_ACTORS
+
+    return n
 
 def build_actor_sdf(actor_name, skin_uri, anim_uri, x1, y1, x2, y2, is_horiz):
     # Dikey ise 90 derece (1.57), Yatay ise 0 derece
@@ -229,7 +282,7 @@ def build_actor_sdf(actor_name, skin_uri, anim_uri, x1, y1, x2, y2, is_horiz):
     dist = (dx*dx + dy*dy) ** 0.5
     
     # Hız Profili
-    base_speed = 1.0 # m/s
+    base_speed = 1.4 # m/s
     duration = dist / base_speed
     
     t0 = 0.0
@@ -262,8 +315,6 @@ def build_actor_sdf(actor_name, skin_uri, anim_uri, x1, y1, x2, y2, is_horiz):
 
 def _corridor_near_spawn(corridor, spawn_r, spawn_c, radius):
     (r1, c1), (r2, c2), _ = corridor
-    # Basitçe koridorun herhangi bir ucu spawn'a çok yakınsa ele
-    # (Daha hassas kontrol yapılabilir ama bu yeterli)
     if (abs(r1 - spawn_r) < radius and abs(c1 - spawn_c) < radius) or \
        (abs(r2 - spawn_r) < radius and abs(c2 - spawn_c) < radius):
         return True
@@ -274,34 +325,71 @@ def spawn_multiple_actors(walls, rows, cols):
         print("❌ Dosyalar eksik.")
         return
 
-    # Hem Yatay Hem Dikey koridorları topla
     corridors = collect_corridors(walls, rows, cols, min_len=2)
-    
+
     sr, sc = DRONE_SPAWN_CELL
-    # Spawn yakını temizle
-    safe_corridors = [c for c in corridors if not _corridor_near_spawn(c, sr, sc, AVOID_SPAWN_RADIUS_CELLS)]
-    
+    safe_corridors = [
+        c for c in corridors
+        if not _corridor_near_spawn(c, sr, sc, AVOID_SPAWN_RADIUS_CELLS)
+    ]
+
     if not safe_corridors:
         print("❌ Uygun koridor bulunamadı.")
         return
 
-    n = min(pick_actor_count(rows, cols), len(safe_corridors))
-    print(f"🎯 Hedeflenen İnsan Sayısı: {n}")
-    
-    chosen = random.sample(safe_corridors, k=n)
+    target_n = pick_actor_count(rows, cols)
+    actor_slots = []
+    for corr in safe_corridors:
+        actor_slots.append(corr)
+        corr_len = corridor_len_cells(corr)
+        if corr_len >= LONG_CORRIDOR_BONUS_THRESHOLD:
+            bonus = corr_len // LONG_CORRIDOR_BONUS_THRESHOLD
+            for _ in range(bonus):
+                actor_slots.append(corr)
+
+    while len(actor_slots) < target_n:
+        actor_slots.append(random.choice(safe_corridors))
+    random.shuffle(actor_slots)
+    actor_slots = actor_slots[:target_n]
+
+    print(f"🎯 Hedeflenen İnsan Sayısı: {target_n}")
+    print(f"📌 Güvenli koridor sayısı: {len(safe_corridors)}")
+    print(f"📌 Kullanılan actor slot sayısı: {len(actor_slots)}")
+
     skin_uri = _file_uri(SKIN_PATH)
     anim_uri = _file_uri(ANIM_PATH)
+    corridor_usage = {}
 
-    for idx, corr in enumerate(chosen):
-        x1, y1, x2, y2, is_horiz = corridor_to_world(corr, rows, cols, CELL_SIZE)
+    for idx, corr in enumerate(actor_slots):
+        key = str(corr)
+        corridor_usage[key] = corridor_usage.get(key, 0) + 1
+
+    spawned_per_corridor = {}
+
+    for idx, corr in enumerate(actor_slots):
+        key = str(corr)
+        spawned_per_corridor[key] = spawned_per_corridor.get(key, 0) + 1
+
+        total_for_this_corr = corridor_usage[key]
+        points = sample_points_on_corridor(corr, rows, cols, CELL_SIZE, total_for_this_corr)
+        x1, y1 = points[spawned_per_corridor[key] - 1]
+        cx1, cy1, cx2, cy2, is_horiz = corridor_to_world(corr, rows, cols, CELL_SIZE)
+
+        if is_horiz:
+            endpoints = [(cx1, cy1), (cx2, cy2)]
+        else:
+            endpoints = [(cx1, cy1), (cx2, cy2)]
+        d0 = (x1 - endpoints[0][0])**2 + (y1 - endpoints[0][1])**2
+        d1 = (x1 - endpoints[1][0])**2 + (y1 - endpoints[1][1])**2
+        x2, y2 = endpoints[0] if d0 > d1 else endpoints[1]
+
         name = f"human_{idx}_{random.randint(100,999)}"
         sdf = build_actor_sdf(name, skin_uri, anim_uri, x1, y1, x2, y2, is_horiz)
-        
-        # remove_entity(name, "ACTOR")
+
         spawn_sdf_model(name, sdf)
         print(f"✅ Actor[{idx}] spawn edildi.")
 
-# ─── WALLS KAYDETME (auto_maze_navigator.py için) ──────────────────────────
+
 import json
 
 WALLS_SAVE_PATH = "/home/ubuntu/Desktop/maze_walls.json"
