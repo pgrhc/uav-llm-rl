@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
 """
-auto_maze_navigator.py  —  Frontier-Based Exploration
-──────────────────────────────────────────────────────
-Eski: Rastgele hedef seç → direkt git (keşif yok)
-Yeni: Hiç gidilmemiş komşu hücreleri (frontier) önceliklendir
-      → Drone maze'i sistematik olarak tarar, tüm koridorları gezir.
-
-Strateji:
-  1. Ziyaret edilmemiş hücreleri takip et (visited set).
-  2. Her adımda mevcut hücrenin erişilebilir komşularından
-     ZİYARET EDİLMEMİŞ olanları "frontier" olarak listele.
-  3. Frontier boşsa uzak bir ziyaret edilmemiş hücreye git.
-  4. Her yer gezilince yeniden başla (sıfırla).
+auto_maze_navigator.py  —  Frontier-Based Exploration (FIXED)
+──────────────────────────────────────────────────────────────
+Düzeltmeler:
+  1. QoS uyumluluğu sağlandı (VOLATILE kullanımı)
+  2. Path sürekli publish ediliyor (her timer döngüsünde)
+  3. Hedefe ulaşınca anında yeni hedef seçiliyor
 """
 
 import rclpy
@@ -133,23 +127,31 @@ class AutoMazeNavigator(Node):
     def __init__(self):
         super().__init__("auto_maze_navigator")
 
-        qos_rel = QoSProfile(
+        # ✅ FIX 1: QoS uyumluluğu - VOLATILE kullan (TRANSIENT_LOCAL yerine)
+        qos_path = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-            history=HistoryPolicy.KEEP_LAST, depth=10)
-        qos_be = QoSProfile(
+            durability=DurabilityPolicy.VOLATILE,  # ✅ Değiştirildi
+            history=HistoryPolicy.KEEP_LAST, 
+            depth=10
+        )
+        qos_odom = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST, depth=10)
+            history=HistoryPolicy.KEEP_LAST, 
+            depth=10
+        )
 
-        self.path_pub = self.create_publisher(Path, "/plan", qos_rel)
+        self.path_pub = self.create_publisher(Path, "/plan", qos_path)
         self.odom_sub = self.create_subscription(
-            Odometry, "/odometry/filtered", self.odom_cb, qos_be)
+            Odometry, "/odometry/filtered", self.odom_cb, qos_odom)
 
         self.pos_enu    = [0.0, 0.0, 0.0]
         self.odom_ok    = False
         self.navigating = False
         self.goal_cell  = None
+        
+        # ✅ FIX 2: Aktif path'i sakla - sürekli publish için
+        self.current_path_cells = []
 
         self.walls   = load_walls()
         self.visited = set()
@@ -160,7 +162,8 @@ class AutoMazeNavigator(Node):
             f"Toplam {ROWS*COLS} hücre keşfedilecek."
         )
 
-        self.timer = self.create_timer(1.5, self.loop)
+        # ✅ FIX 3: Timer'ı daha sık çalıştır (0.5 saniye)
+        self.timer = self.create_timer(0.5, self.loop)
 
     # ── Odometry ──────────────────────────────────────────────────────────────
 
@@ -181,6 +184,7 @@ class AutoMazeNavigator(Node):
 
         curr_cell = world_to_cell(self.pos_enu[0], self.pos_enu[1])
 
+        # ✅ FIX 4: Varış kontrolü - anında yeni hedef seç
         if self.navigating and self.goal_cell:
             gx, gy = cell_to_world(*self.goal_cell)
             dist = math.hypot(self.pos_enu[0]-gx, self.pos_enu[1]-gy)
@@ -191,9 +195,16 @@ class AutoMazeNavigator(Node):
                 )
                 self.visited.add(self.goal_cell)
                 self.navigating = False
+                # ✅ Anında yeni hedef seç (timer'ı bekleme)
+                self._pick_next_goal(curr_cell)
 
+        # Yeni hedef gerekiyorsa seç
         if not self.navigating:
             self._pick_next_goal(curr_cell)
+        
+        # ✅ FIX 5: Path'i sürekli publish et (her döngüde)
+        if self.current_path_cells:
+            self._publish_path(self.current_path_cells)
 
     # ── Hedef Seçimi (Frontier-Based) ─────────────────────────────────────────
 
@@ -235,6 +246,8 @@ class AutoMazeNavigator(Node):
             f"Gezilen: {len(self.visited)}/{ROWS*COLS}"
         )
 
+        # ✅ Path'i sakla
+        self.current_path_cells = path_cells
         self._publish_path(path_cells)
         self.goal_cell  = goal
         self.navigating = True

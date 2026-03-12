@@ -3,29 +3,29 @@ from rclpy.node import Node
 from std_msgs.msg import String
 import json
 import time
-import re # Regex için gerekli
+import re 
+from geometry_msgs.msg import Twist
+from std_msgs.msg import String, Float32
+import json
 
-# OpenAI / Ollama Kütüphanesi
 try:
     from openai import OpenAI
 except ImportError:
     print("LÜTFEN YÜKLE: pip install openai")
 
-# Servis Dosyası
+
 try:
     from fusion_msgs.srv import StrategicAdvice
 except ImportError:
     pass
 
-# --- AYARLAR ---
 USE_LOCAL_LLM = True
-LOCAL_MODEL_NAME = "llama3" # "qwen2.5:3b" veya "mistral" de olabilir
+LOCAL_MODEL_NAME = "qwen2.5:7b"
 
 class LLMStrategicNode(Node):
     def __init__(self):
         super().__init__('llm_strategic_node')
         
-        # 1. LLM İSTEMCİSİ (Ollama)
         if USE_LOCAL_LLM:
             self.client = OpenAI(
                 base_url="http://localhost:11434/v1",
@@ -35,13 +35,11 @@ class LLMStrategicNode(Node):
         else:
             self.client = OpenAI(api_key="sk-...")
 
-        # 2. HAFIZA (Sensör verisi burada tutulur)
         self.latest_system_state = json.dumps({
             "lidar": {"front_space": 0.0}, 
             "status": "WAITING_FOR_SENSORS"
         })
 
-        # 3. KULAK (Subscriber): StateSummarizer'ı dinler
         self.create_subscription(
             String,
             '/llm/system_summary',
@@ -49,25 +47,20 @@ class LLMStrategicNode(Node):
             10
         )
 
-        # 4. SERVİS (Server): Emir bekler
         self.srv = self.create_service(
             StrategicAdvice, 
             'llm/plan_and_explain', 
             self.handle_advice_request
         )
 
-        self.get_logger().info("✅ LLM Node Hazır: Gelişmiş CoT Prompt ile çalışıyor...")
+        self.get_logger().info("✅ LLM Node Hazır")
 
-    # --- SENSÖR VERİSİNİ GÜNCELLEME ---
+
     def state_callback(self, msg):
-        """Sensörlerden gelen veriyi hafızaya yazar."""
         self.latest_system_state = msg.data
 
-    # --- SERVİS ÇAĞRISI GELDİĞİNDE ---
     def handle_advice_request(self, request, response):
         start_t = time.time()
-        
-        # "auto" modundaysa sensör verisini kullan, değilse elle girileni kullan
         if request.system_summary_json == "" or request.system_summary_json == "auto":
             summary_str = self.latest_system_state
             source = "REAL SENSORS"
@@ -81,72 +74,86 @@ class LLMStrategicNode(Node):
         self.get_logger().info(f"📨 LLM Düşünüyor (CoT)... (Kaynak: {source})")
 
         try:
-            # Sizin özel Prompt fonksiyonunuzu çağırıyoruz
             llm_result = self.call_llm(summary_str, mission, constraints)
-            
-            # Cevabı ROS servisine paketle
-            response.advice_json = json.dumps({
-                "mode": llm_result.get("mode", "normal"),
-                "action": llm_result.get("action", "maintain"),
-                "params": llm_result.get("params", {}),
-                "reasoning_trace": llm_result.get("reasoning_trace", "") # CoT izini de ekleyebiliriz isterseniz
-            })
-            response.explanation_text = llm_result.get("explanation", "No explanation.")
+            response.advice_json = json.dumps(llm_result)  
+            response.explanation_text = llm_result.get("explanation", "")
             response.success = True
             
         except Exception as e:
             self.get_logger().error(f"LLM İşleme Hatası: {str(e)}")
             response.success = False
             response.explanation_text = "Internal Logic Error"
-            response.advice_json = json.dumps({"mode": "cautious", "action": "hover"})
+            response.advice_json = json.dumps({"mode": "cautious", "action": "slow_down", "params": {"speed_limit": 0.3, "collision_weight": 2.0}})
 
         process_time = time.time() - start_t
         self.get_logger().info(f"✅ Karar ({process_time:.2f}s): {response.explanation_text}")
         return response
 
-    # --- SİZİN İSTEDİĞİNİZ ÖZEL PROMPT FONKSİYONU ---
+
     def call_llm(self, context_json, mission, constraints="None"):
-        """
-        Ollama Modelini Çağırır - CoT (Chain-of-Thought) Destekli
-        """
-        
+
         system_prompt = """
-        You are the Strategic AI Cortex for an autonomous UAV, employing Chain-of-Thought (CoT) reasoning.
-        
-        INPUT DATA:
-        - Sensor Data (JSON): Lidar distances, Radar objects, Threat Agent scores.
-        - Mission Goal: The objective to achieve.
-        - Constraints: Safety limits (e.g., max speed, no-fly zones).
+You are the Strategic AI Cortex for an autonomous UAV. You MUST fill every field in the response schema without exception.
 
-        TASK:
-        1. ANALYZE: Review 'primary_threat' scores and 'lidar' spatial data step-by-step.
-        2. REASON: Evaluate safety risks against the mission goal. Consider constraints.
-        3. DECIDE: Select the optimal 'mode' and 'action'.
+### OPERATIONAL MANDATE
+1. ANALYZE all inputs: speed, lidar, tracked_objects, and mission_goal.
+2. EVALUATE risk based on primary_threat score and distance.
+3. COMPARE lidar spaces (front, left, right) to find the safest path.
+4. VALIDATE mission status (planner_status, progress).
 
-        Output: STRICT JSON object only. NO Markdown codes (```), NO intro text.
-        
-        Response Schema:
-        {
-            "reasoning_trace": "1. Threat analysis: [Score X detected] -> High/Low risk. 2. Spatial analysis: [Front X m] -> Path clear/blocked. 3. Constraint check: [Speed Limit] -> Adjusting parameters.",
-            "mode": "normal" | "cautious" | "defense" | "emergency_stop",
-            "action": "maintain" | "slow_down" | "avoid_left" | "avoid_right" | "land",
-            "params": {"speed_limit": float, "collision_weight": float},
-            "explanation": "Concise, tactical explanation for the operator dashboard."
-        }
+### STRICT DECISION HIERARCHY
+- RISK > 0.8 OR DIST < 1.0m => mode: "defense", action: "orbit" or "reverse".
+- RISK > 0.4 => mode: "cautious", action: "slow_down".
+- SPACE ADVANTAGE => If (side_space > front_space + 0.6) AND (side_space > other_side_space), action: "avoid_left/right".
+- MISSION LOSS => If path_available is false OR off_path, action: "replan".
+- DEFAULT => mode: "normal", action: "maintain".
 
-        LOGIC RULES:
-        - IF 'primary_threat' risk_score > 0.6 THEN mode = 'defense', collision_weight > 2.0.
-        - IF 'lidar' front_space < 2.0m THEN action = 'slow_down' OR 'avoid_...'.
-        - IF constraints are violated, prioritize safety immediately.
-        """
+### RESPONSE REQUIREMENTS (MANDATORY)
+Your JSON must include detailed strings for:
+- 'risk': Describe the primary threat's class, distance, and exact risk score.
+- 'space': Compare exact meter values of front, left, and right.
+- 'decision': Explain the logical step-by-step why this action was chosen over others.
 
-        # Kullanıcı Prompt'u
+### OUTPUT SCHEMA (STRICT JSON ONLY)
+{
+  "reasoning_trace": {
+    "risk": "string (MUST contain threat data)",
+    "space": "string (MUST contain lidar comparison)",
+    "mission": "string (MUST describe planner status)",
+    "decision": "string (Detailed logic)",
+    "confidence": float
+  },
+  "mode": "normal|cautious|defense|holding|recovery",
+  "action": "maintain|slow_down|avoid_left|avoid_right|reverse|orbit|replan",
+  "params": {
+    "speed_limit": float,
+    "collision_weight": float,
+    "escape_vector": [x, y, 0.0]
+  },
+  "explanation": "Short summary for operator"
+}
+"""
+       
         user_prompt = f"""
         CURRENT SENSOR DATA: {context_json}
         MISSION GOAL: {mission}
         ACTIVE CONSTRAINTS: {constraints}
         
-        EXECUTE CHAIN-OF-THOUGHT ANALYSIS AND DECIDE.
+        EXECUTE COMPREHENSIVE CHAIN-OF-THOUGHT ANALYSIS AND DECIDE.
+        MANDATORY VALIDATION CHECKLIST:
+        Before finalizing your output, verify:
+
+        ☐ If risk_score >= 0.80, did I set mode = "defense"?
+        ☐ If risk_score >= 0.75 AND front <= 2.0, did I avoid "maintain"?
+        ☐ If one side has +0.6m advantage, did I prefer directional avoidance?
+        ☐ If high risk with limited front, did I choose active maneuver (not just slow_down)?
+        ☐ Are my speed_limit and collision_weight consistent with mode?
+
+        If ANY checkbox fails, REVISE your decision before outputting.
+        No prose before the JSON.
+        No prose after the JSON.
+
+        Return strategic decision as strict JSON.
         """
 
         try:
@@ -156,41 +163,141 @@ class LLMStrategicNode(Node):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.1,
+                temperature=0.0,
             )
             content = response.choices[0].message.content
             
-            # --- DEBUG: LLM NE DEDİ? (Terminalde gör) ---
+          
             self.get_logger().info(f"🔍 HAM LLM ÇIKTISI: {content}")
-
-            # --- MARKDOWN VE GÜRÜLTÜ TEMİZLİĞİ ---
-            # 1. Regex ile ```json ... ``` arasını bulmaya çalış
             match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
             if match:
                 clean_json = match.group(1)
             else:
-                # 2. Regex bulamazsa klasik yöntem: İlk '{' ve son '}' arasını al
                 start = content.find('{')
                 end = content.rfind('}') + 1
                 if start != -1 and end != -1:
                     clean_json = content[start:end]
                 else:
                     raise ValueError("JSON parantezleri bulunamadı.")
+            context = {}
+            try:
+                context = json.loads(context_json)
+            except Exception:
+                context = {}
 
-            return json.loads(clean_json)
+            mission_ctx = context.get("mission", {})
+            parsed_result = json.loads(clean_json)
+            parsed_result.setdefault("reasoning_trace", {})
+            parsed_result.setdefault("params", {})
+            trace = parsed_result.get("reasoning_trace", {})
+            parsed_result["params"].setdefault(
+                "mission_progress",
+                mission_ctx.get("mission_progress", 0.0)
+            )
+            
+
+            parsed_result["reasoning_trace"]["risk_assessment"] = trace.get("risk", "No risk data")
+            parsed_result["reasoning_trace"]["space_analysis"] = trace.get("space", "No space data")
+            if "mission_analysis" not in parsed_result["reasoning_trace"] or \
+            parsed_result["reasoning_trace"]["mission_analysis"] in ["", "Mission analysis not fully provided by model."]:
+                
+                planner_status = mission_ctx.get("planner_status", "unknown")
+                dist_next = mission_ctx.get("distance_to_next_waypoint", None)
+                dist_final = mission_ctx.get("distance_to_final_goal", None)
+                goal_dir = mission_ctx.get("goal_direction", "unknown")
+                prog = mission_ctx.get("mission_progress", None)
+
+                parsed_result["reasoning_trace"]["mission_analysis"] = (
+                    f"Planner status: {planner_status}, "
+                    f"distance_to_next_waypoint: {dist_next}, "
+                    f"distance_to_final_goal: {dist_final}, "
+                    f"goal_direction: {goal_dir}, "
+                    f"mission_progress: {prog}."
+                )
+          
+
+           
+
+            if not self.validate_llm_output(parsed_result):
+                self.get_logger().warn("⚠️ LLM output validation failed, using fallback")
+                raise ValueError("Validation failed")
+
+            return parsed_result
+        
 
         except Exception as e:
             error_msg = f"PARSE ERROR: {str(e)}"
             self.get_logger().error(error_msg)
             
-            # Hata durumunda fail-safe dönüş
             return {
-                "mode": "cautious", 
-                "action": "hover",
-                "explanation": f"LLM Parse Failed. Error: {str(e)}",
-                "reasoning_trace": error_msg,
-                "params": {}
-            }
+                    "reasoning_trace": {
+                        "risk_assessment": "Parse or validation error occurred",
+                        "space_analysis": "Unable to analyze local free space reliably",
+                        "mission_analysis": "Mission context could not be interpreted",
+                        "decision": "Fallback to cautious safety-preserving behavior",
+                        "confidence": 0.3,
+                        "alternatives_rejected": {}
+                    },
+                    "mode": "cautious",
+                    "action": "slow_down",
+                    "params": {
+                        "speed_limit": 0.3,
+                        "collision_weight": 2.0,
+                        "confidence_score": 0.3,
+                        "threat_priority": "none",
+                        "escape_vector": [0.0, 0.0, 0.0],
+                        "time_to_impact": None,
+                        "alternative_actions": [],
+                        "mission_progress": 0.0
+                    },
+                    "explanation": f"LLM parse failed. Fallback to cautious mode. Error: {str(e)}"
+                }
+        
+    def validate_llm_output(self, llm_result):
+        try:
+            if not isinstance(llm_result, dict):
+                self.get_logger().warn("❌ Output is not a dict")
+                return False
+
+            required_fields = ["mode", "action", "params"]
+            for field in required_fields:
+                if field not in llm_result:
+                    self.get_logger().warn(f"❌ Missing field: {field}")
+                    return False
+
+            valid_modes = [
+                "normal",
+                "cautious",
+                "defense",
+                "holding",
+                "recovery"
+            ]
+            if llm_result["mode"] not in valid_modes:
+                self.get_logger().warn(f"❌ Invalid mode: {llm_result['mode']}")
+                return False
+
+            valid_actions = [
+                "maintain",
+                "slow_down",
+                "avoid_left",
+                "avoid_right",
+                "reverse",
+                "orbit",
+                "replan"
+            ]
+            if llm_result["action"] not in valid_actions:
+                self.get_logger().warn(f"❌ Invalid action: {llm_result['action']}")
+                return False
+
+            if not isinstance(llm_result["params"], dict):
+                self.get_logger().warn("❌ params is not a dict")
+                return False
+
+            return True
+
+        except Exception as e:
+            self.get_logger().error(f"❌ Validation error: {str(e)}")
+            return False
 
 def main(args=None):
     rclpy.init(args=args)

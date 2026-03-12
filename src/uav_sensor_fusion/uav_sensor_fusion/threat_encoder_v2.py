@@ -19,20 +19,12 @@ from nav_msgs.msg import Odometry
 import math
 from sklearn.cluster import DBSCAN
 
-# ══════════════════════════════════════════════════════════════════════════════
-# YOLO → Environment Class Mapping
-# ══════════════════════════════════════════════════════════════════════════════
-# COCO dataset class IDs → Environment expected class IDs
-# COCO:        0=person, 2=car, 16=bird, ...
-# Environment: 0=Unknown, 1=Drone, 2=Bird, 3=FixedWing, 4=Person
-# ══════════════════════════════════════════════════════════════════════════════
 
 YOLO_TO_ENV_CLASS = {
-    "0":  4,   # COCO person   → Environment Person
-    "16": 2,   # COCO bird     → Environment Bird
-    "2":  1,   # COCO car      → Environment Drone (yaklaşım)
-    "5":  1,   # COCO airplane → Environment Drone (yaklaşım)
-    # Diğer sınıflar Unknown (0) olarak map edilir
+    "0":  4,   
+    "16": 2,      
+    "5":  1,   
+    
 }
 
 
@@ -48,7 +40,7 @@ class Track:
         self.age = 1
         self.miss = 0
 
-        self.class_id = 0   # ← Environment format: integer (0-4)
+        self.class_id = 0   
         self.yolo_conf = 0.0
         self.radar_conf = 0.0
         self.intensity = 0.0
@@ -69,7 +61,7 @@ class Track:
                 self.vel[:] *= 0.8
             else:
                 v_inst = dp / dt
-                alpha = 0.3 if dist_moved > 0.1 else 0.15  # Adaptive
+                alpha = 0.3 if dist_moved > 0.1 else 0.15  
                 self.vel = (1 - alpha) * self.vel + alpha * v_inst
 
         self.last_pos = pos
@@ -80,7 +72,7 @@ class Track:
         self.miss = 0
 
         if class_id is not None:
-            self.class_id = int(class_id)  # ← Integer olarak sakla
+            self.class_id = int(class_id) 
         if yolo_conf is not None:
             self.yolo_conf = float(yolo_conf)
         if radar_conf is not None:
@@ -106,28 +98,25 @@ class ThreatEncoderNode(Node):
         self.track_match_dist = 2.0
         self.max_miss = 15
         self.K = 5
-        self.token_len = 7  # ← CHANGED: 17 → 7
-
-        # LiDAR parametreleri
-        self.lidar_sectors = 36  # 360° / 10° = 36 sektör
-        self.lidar_max_range = 30.0  # Normalizasyon için max mesafe
+        self.token_len = 7  
+        self.lidar_sectors = 36 
+        self.lidar_max_range = 30.0  
         
         self.latest_yolo = None
         self.latest_radar = None
-        self.latest_lidar = None  # ← NEW: LiDAR verisi
+        self.latest_lidar = None 
         
         self.tracks = {}
         self.next_id = 1
 
-        # Subscriptions
+
         self.create_subscription(
             Detection3DArray, "/yolo/projected_detections", self.cb_yolo, 10)
         self.create_subscription(
             RadarPoints, "/radar/points_filtered_radarmsg", self.cb_radar, 10)
         self.create_subscription(
-            LaserScan, "/world/default/model/x500_mono_cam_0/link/link/sensor/lidar_2d_v2/scan", self.cb_lidar, 10)  # ← NEW: LiDAR subscription
+            LaserScan, "/world/default/model/x500_mono_cam_0/link/link/sensor/lidar_2d_v2/scan", self.cb_lidar, 10) 
 
-        # Publishers
         self.pub_state = self.create_publisher(Float32MultiArray, "/threat/state_vec", 10)
         self.pub_debug = self.create_publisher(String, "/threat/debug_topk", 10)
 
@@ -159,28 +148,11 @@ class ThreatEncoderNode(Node):
         self.latest_radar = msg
 
     def cb_lidar(self, msg: LaserScan):
-        """
-        ═══════════════════════════════════════════════════════════════════
-        LiDAR Callback: LaserScan mesajını işle
-        ═══════════════════════════════════════════════════════════════════
-        """
+
         self.latest_lidar = msg
 
     def _process_lidar(self, scan_msg: LaserScan):
-        """
-        ═══════════════════════════════════════════════════════════════════
-        LiDAR İşleme: 36 sektöre böl ve normalize et
-        ═══════════════════════════════════════════════════════════════════
-        Her sektör 10 derece (360/36 = 10°)
-        Her sektördeki minimum mesafeyi al ve normalize et [0, 1]
-        
-        Returns:
-            list of 36 floats: normalize edilmiş mesafeler
-        ═══════════════════════════════════════════════════════════════════
-        """
         ranges = np.array(scan_msg.ranges, dtype=np.float32)
-        
-        # Geçersiz değerleri max range ile değiştir
         ranges = np.where(np.isfinite(ranges), ranges, self.lidar_max_range)
         ranges = np.clip(ranges, 0.0, self.lidar_max_range)
         
@@ -198,7 +170,6 @@ class ThreatEncoderNode(Node):
             else:
                 min_dist = self.lidar_max_range
             
-            # Normalize: [0, max_range] → [0, 1]
             normalized = float(np.clip(min_dist / self.lidar_max_range, 0.0, 1.0))
             sector_distances.append(normalized)
         
@@ -208,19 +179,12 @@ class ThreatEncoderNode(Node):
         return float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
     def _cluster_radar(self, radar_xyi):
-        """
-        DBSCAN-based radar clustering.
-        Input : radar_xyi = [(x, y, intensity), ...] in base_link
-        Output: [{"pos": (cx, cy), "intensity": mean_inten, "radar_conf": conf}, ...]
-        """
-
         if len(radar_xyi) == 0:
             return []
 
         pts = np.array([[p[0], p[1]] for p in radar_xyi], dtype=np.float32)
         intens = np.array([p[2] for p in radar_xyi], dtype=np.float32)
 
-        # --- DBSCAN params ---
         eps = float(getattr(self, "dbscan_eps", 0.6))
         min_samples = int(getattr(self, "dbscan_min_samples", 4))
 
@@ -286,7 +250,6 @@ class ThreatEncoderNode(Node):
         p = np.array(pos_xy, dtype=np.float32)
         
         for tid, tr in self.tracks.items():
-            # Velocity prediction
             predicted_pos = tr.pos + tr.vel * dt_since_last
             d_pos = float(np.linalg.norm(predicted_pos - p))
             
@@ -339,28 +302,21 @@ class ThreatEncoderNode(Node):
         for tid in to_del:
             del self.tracks[tid]
 
-    def _tokenize(self, tr: Track):
-        """
-        ═══════════════════════════════════════════════════════════════════
-        TOKEN FORMAT V2 (7 features) — Simplified for Direct Scoring
-        ═══════════════════════════════════════════════════════════════════
-        0:  class_id       (0=Unknown, 1=Drone, 2=Bird, 3=FixedWing, 4=Person)
-        1:  dist           (range to UAV)
-        2:  closing_speed  (radial velocity, positive=approaching)
-        3:  sin(bearing)   (normalized bearing component)
-        4:  cos(bearing)   (normalized bearing component)
-        5:  confidence     (max of YOLO/radar confidence)
-        6:  is_valid       (1.0 if valid track, 0.0 if padding)
-        ═══════════════════════════════════════════════════════════════════
-        """
+    def _tokenize(self, tr: Track, lidar_distances):
         x, y = float(tr.pos[0]), float(tr.pos[1])
         vx, vy = float(tr.vel[0]), float(tr.vel[1])
-
         r = float(np.hypot(x, y))
+        theta = math.atan2(y, x)
+        if theta < 0:
+            theta += 2 * math.pi  
+            
+        sector_idx = int((theta / (2 * math.pi)) * self.lidar_sectors) % self.lidar_sectors
+        lidar_gercek_mesafe = lidar_distances[sector_idx] * self.lidar_max_range
+        is_visible = 1.0 if r <= (lidar_gercek_mesafe + 0.5) else 0.0
 
         if r > 1e-3:
             closing = float(-(x * vx + y * vy) / r)
-            if abs(closing) < 0.05:  # Noise gate
+            if abs(closing) < 0.05:  
                 closing = 0.0
             sn = float(y / r)
             cs = float(x / r)
@@ -371,49 +327,40 @@ class ThreatEncoderNode(Node):
         conf = max(tr.yolo_conf, tr.radar_conf)
 
         token = [
-            float(tr.class_id),    # 0: class_id
-            r,                     # 1: dist
-            closing,               # 2: closing_speed
-            sn,                    # 3: sin(bearing)
-            cs,                    # 4: cos(bearing)
-            conf,                  # 5: confidence
-            1.0                    # 6: is_valid (gerçek track)
+            float(tr.class_id), 
+            r,              
+            closing,               
+            sn,                   
+            cs,                   
+            conf,                 
+            is_visible            
         ]
-        return token, r, closing
+        return token, r, closing, is_visible
 
-    def _pre_score(self, tr: Track):
-        token, r, closing = self._tokenize(tr)
+    def _pre_score(self, tr: Track, lidar_distances):
+        token, r, closing, is_visible = self._tokenize(tr, lidar_distances)
         conf = max(tr.yolo_conf, tr.radar_conf)
-
-        # Class weight: Person > Unknown > Drone/Bird
-        if tr.class_id == 4:    # Person
+        if tr.class_id == 4:    
             cw = 1.0
-        elif tr.class_id == 0:  # Unknown
+        elif tr.class_id == 0:  
             cw = 0.5
-        else:                   # Drone/Bird/FixedWing
+        else:                  
             cw = 0.2
 
         score = 0.4 * (2.0 / (r + 0.5)) + 0.3 * max(0.0, closing) + 0.2 * conf + 0.1 * cw
+        visibility_multiplier = 1.0 if is_visible > 0.5 else 0.01
+        score *= visibility_multiplier
         return float(score)
 
     def _publish_empty(self, reason="NO_FRESH_SENSORS"):
-        """
-        ═══════════════════════════════════════════════════════════════════
-        Empty State Vector V2 (74 elements)
-        ═══════════════════════════════════════════════════════════════════
-        [0:3]   UAV state: speed_norm, yaw_sin, yaw_cos
-        [3:39]  LiDAR: 36 × 1.0 (max range, tüm sektörler boş)
-        [39:74] Objects: 5 tracks × 7 features (all zeros, is_valid=0.0)
-        ═══════════════════════════════════════════════════════════════════
-        """
         yaw_sin = math.sin(self.uav_yaw)
         yaw_cos = math.cos(self.uav_yaw)
         max_speed = 5.0
         speed_norm = float(np.clip(self.uav_speed / max_speed, 0.0, 1.0))
 
-        vec = [speed_norm, yaw_sin, yaw_cos]  # [0:3] UAV state
-        vec.extend([1.0] * self.lidar_sectors)  # [3:39] LiDAR (36 × 1.0 = boş)
-        vec.extend([0.0] * (self.K * self.token_len))  # [39:74] Objects (5 × 7 = 35 zeros)
+        vec = [speed_norm, yaw_sin, yaw_cos]  
+        vec.extend([1.0] * self.lidar_sectors) 
+        vec.extend([0.0] * (self.K * self.token_len))  
 
         msg = Float32MultiArray()
         msg.data = vec
@@ -540,8 +487,8 @@ class ThreatEncoderNode(Node):
   
         scored = []
         for tid, tr in self.tracks.items():
-            s = self._pre_score(tr)
-            token, _, _ = self._tokenize(tr)
+            s = self._pre_score(tr, lidar_distances)
+            token, _, _, _ = self._tokenize(tr, lidar_distances)
             scored.append((s, tid, token, tr))
         
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -553,8 +500,8 @@ class ThreatEncoderNode(Node):
         max_speed = 5.0
         speed_norm = float(np.clip(self.uav_speed / max_speed, 0.0, 1.0))
 
-        vec = [speed_norm, yaw_sin, yaw_cos]  # [0:3] UAV state
-        vec.extend(lidar_distances)            # [3:39] LiDAR (36 elements)
+        vec = [speed_norm, yaw_sin, yaw_cos]  
+        vec.extend(lidar_distances)            
 
         
         for i in range(self.K):
@@ -563,13 +510,13 @@ class ThreatEncoderNode(Node):
             else:
                 
                 vec.extend([
-                    0.0,  # class_id
-                    0.0,  # dist
-                    0.0,  # closing_speed
-                    0.0,  # sin(bearing)
-                    0.0,  # cos(bearing)
-                    0.0,  # confidence
-                    0.0   # is_valid
+                    0.0,  
+                    0.0,
+                    0.0,  
+                    0.0,  
+                    0.0,  
+                    0.0,  
+                    0.0 
                 ])
 
         msg = Float32MultiArray()

@@ -3,27 +3,18 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     return LaunchDescription([
-        # ---------------------------------------------------------
-        # 1. THREAT AGENT INFERENCE (Tehdit Algılama - RL Modeli)
-        # ---------------------------------------------------------
-        # Paket: uav_threat_agent
-        # Executable: inference (setup.py'da tanımladığın isim)
+
         Node(
             package='uav_threat_agent',
-            executable='inference',
-            name='threat_agent_node',
+            executable='target_node',
+            name='target_node',
             output='screen',
-            emulate_tty=True, # Renkli loglar için
+            emulate_tty=True, 
             parameters=[
-                {'use_sim_time': True} # Simülasyon zamanı ile senkronize ol
+                {'use_sim_time': True} 
             ]
         ),
 
-        # ---------------------------------------------------------
-        # 2. STATE SUMMARIZER (Veri Füzyonu ve JSON Dönüşümü)
-        # ---------------------------------------------------------
-        # Paket: uav_llm
-        # Executable: state_summarizer (setup.py'da tanımladığın isim)
         Node(
             package='uav_llm',
             executable='state_summarizer_node',
@@ -35,11 +26,7 @@ def generate_launch_description():
             ]
         ),
 
-        # ---------------------------------------------------------
-        # 3. LLM STRATEGIC NODE (Karar Mekanizması - CoT)
-        # ---------------------------------------------------------
-        # Paket: uav_llm
-        # Executable: llm_node (setup.py'da tanımladığın isim)
+    
         Node(
             package='uav_llm',
             executable='llm_node',
@@ -50,4 +37,5 @@ def generate_launch_description():
                 {'use_sim_time': True}
             ]
         ),
+       
     ])
