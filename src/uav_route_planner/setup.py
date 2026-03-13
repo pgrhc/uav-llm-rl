@@ -29,6 +29,10 @@ setup(
             # Faz 1: RL route agent
             'train_route_node = uav_route_planner.nodes.train_route_node:main',
             'route_agent_node = uav_route_planner.nodes.route_agent_node:main',
+            # Curriculum training
+            'train_route_curriculum = uav_route_planner.nodes.train_route_curriculum:main',
+            # Mega-world maze spawner
+            'maze_curriculum_world = uav_route_planner.maze_curriculum_world:main',
         ],
     },
 )
