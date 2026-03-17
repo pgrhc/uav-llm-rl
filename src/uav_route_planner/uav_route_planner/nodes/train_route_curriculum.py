@@ -30,6 +30,15 @@ from datetime import datetime
 from collections import deque
 
 import numpy as np
+
+try:
+    import matplotlib
+    matplotlib.use("Agg")  # GUI yok, sadece dosyaya kaydet
+    import matplotlib.pyplot as plt
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
+    # Grafik kaydetmek icin: pip install matplotlib
 import gymnasium as gym
 import rclpy
 
@@ -40,7 +49,20 @@ from stable_baselines3.common.monitor import Monitor
 
 import uav_route_planner.envs  # noqa: F401  — triggers register()
 
-from uav_route_planner.maze_curriculum_world import spawn_stage3_actors_lazy
+# Birlesik maze: pozisyon bazli stage, teleport yok
+UNIFIED_MAZE = True
+
+# Stage 3 aktor spawn: birlesik maze'de maze ile birlikte spawn edilir
+def spawn_stage3_actors_lazy():
+    try:
+        from uav_route_planner.maze_curriculum_world import spawn_stage3_actors_lazy as _fn
+        return _fn()
+    except ModuleNotFoundError:
+        print(
+            "WARNING: maze_curriculum_world yok. Stage 3 aktorleri spawn edilmedi. "
+            "Aktorler icin: ros2 run uav_route_planner maze_curriculum_world --actors"
+        )
+        return []
 
 from std_msgs.msg import Int32
 
@@ -108,6 +130,8 @@ class CurriculumScheduler(BaseCallback):
             )
 
     def _on_step(self) -> bool:
+        if UNIFIED_MAZE:
+            return True  # Birlesik maze: stage pozisyondan, scheduler devre disi
         target_stage = self._stage_for_timestep(self.num_timesteps)
         if target_stage != self.current_stage:
             self._transition(target_stage)
@@ -463,6 +487,150 @@ class TrainingLogWriter(BaseCallback):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# CALLBACK 6: PLOT SAVER — Grafikleri PNG olarak kaydet
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class PlotSaverCallback(BaseCallback):
+    """Metrikleri grafik olarak PNG dosyasina kaydeder."""
+
+    def __init__(self, save_dir, record_freq=2048, save_freq=50_000, window=100, verbose=0):
+        super().__init__(verbose)
+        self.save_dir = save_dir
+        self.record_freq = record_freq
+        self.save_freq = save_freq
+        self.window = window
+
+        self.history = []  # [(timestep, {...}), ...]
+        self.ep_successes = deque(maxlen=window)
+        self.ep_collisions = deque(maxlen=window)
+        self.ep_timeouts = deque(maxlen=window)
+        self.ep_rewards = deque(maxlen=window)
+        self.ep_lengths = deque(maxlen=window)
+        self.ep_path_errors = deque(maxlen=window)
+        self.ep_threat_maxes = deque(maxlen=window)
+        self._step_path_errors = []
+        self._step_threat_maxes = []
+
+    def _on_step(self) -> bool:
+        if not HAS_MATPLOTLIB:
+            return True
+
+        infos = self.locals.get("infos", [])
+        dones = self.locals.get("dones", [])
+
+        for i, info in enumerate(infos):
+            self._step_path_errors.append(info.get("path_error", 0.0))
+            self._step_threat_maxes.append(info.get("max_threat", 0.0))
+
+            if dones[i]:
+                self.ep_successes.append(1.0 if info.get("success") else 0.0)
+                self.ep_collisions.append(1.0 if info.get("collision") else 0.0)
+                self.ep_timeouts.append(1.0 if info.get("timeout") else 0.0)
+                ep_info = info.get("episode")
+                if ep_info:
+                    self.ep_rewards.append(ep_info.get("r", 0.0))
+                    self.ep_lengths.append(ep_info.get("l", 0))
+                if self._step_path_errors:
+                    self.ep_path_errors.append(np.mean(self._step_path_errors))
+                if self._step_threat_maxes:
+                    self.ep_threat_maxes.append(np.mean(self._step_threat_maxes))
+                self._step_path_errors.clear()
+                self._step_threat_maxes.clear()
+
+        if self.num_timesteps % self.record_freq == 0 and self.num_timesteps > 0:
+            self._record()
+        if self.num_timesteps % self.save_freq == 0 and self.num_timesteps > 0:
+            self._save_plots()
+
+        return True
+
+    def _record(self):
+        vals = getattr(self.model.logger, "name_to_value", {})
+        ep_buf = list(self.model.ep_info_buffer) if hasattr(self.model, "ep_info_buffer") else []
+
+        entry = {
+            "timesteps": self.num_timesteps,
+            "entropy": vals.get("train/entropy_loss"),
+            "value_loss": vals.get("train/value_loss"),
+            "approx_kl": vals.get("train/approx_kl"),
+            "ep_rew_mean": float(np.mean([e["r"] for e in ep_buf])) if ep_buf else 0.0,
+            "ep_len_mean": float(np.mean([e["l"] for e in ep_buf])) if ep_buf else 0.0,
+            "success_rate": float(np.mean(self.ep_successes)) if self.ep_successes else 0.0,
+            "collision_rate": float(np.mean(self.ep_collisions)) if self.ep_collisions else 0.0,
+            "timeout_rate": float(np.mean(self.ep_timeouts)) if self.ep_timeouts else 0.0,
+            "path_error": float(np.mean(self.ep_path_errors)) if self.ep_path_errors else 0.0,
+            "threat_exposure": float(np.mean(self.ep_threat_maxes)) if self.ep_threat_maxes else 0.0,
+        }
+        self.history.append(entry)
+
+    def _save_plots(self):
+        if not self.history:
+            return
+        os.makedirs(self.save_dir, exist_ok=True)
+        ts = [h["timesteps"] for h in self.history]
+
+        fig, axes = plt.subplots(2, 3, figsize=(14, 9))
+        fig.suptitle(f"Route Curriculum Training — {self.num_timesteps:,} steps", fontsize=12)
+
+        # Episode metrics
+        ax = axes[0, 0]
+        ax.plot(ts, [h["ep_rew_mean"] for h in self.history], "b-", label="Reward")
+        ax.set_title("Mean Episode Reward")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        ax = axes[0, 1]
+        ax.plot(ts, [h["success_rate"] for h in self.history], "g-", label="Success")
+        ax.plot(ts, [h["collision_rate"] for h in self.history], "r-", label="Collision")
+        ax.plot(ts, [h["timeout_rate"] for h in self.history], "orange", label="Timeout")
+        ax.set_title("Outcome Rates")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        ax = axes[0, 2]
+        ax.plot(ts, [h["ep_len_mean"] for h in self.history], "purple")
+        ax.set_title("Mean Episode Length")
+        ax.grid(True, alpha=0.3)
+
+        # Training metrics
+        ax = axes[1, 0]
+        ent_ts = [h["timesteps"] for h in self.history if h["entropy"] is not None]
+        ent_vals = [h["entropy"] for h in self.history if h["entropy"] is not None]
+        if ent_ts and ent_vals:
+            ax.plot(ent_ts, ent_vals, "b-")
+        ax.set_title("Policy Entropy")
+        ax.grid(True, alpha=0.3)
+
+        ax = axes[1, 1]
+        vl_ts = [h["timesteps"] for h in self.history if h["value_loss"] is not None]
+        vl_vals = [h["value_loss"] for h in self.history if h["value_loss"] is not None]
+        if vl_ts and vl_vals:
+            ax.plot(vl_ts, vl_vals, "r-")
+        ax.set_title("Value Loss")
+        ax.grid(True, alpha=0.3)
+
+        ax = axes[1, 2]
+        ax.plot(ts, [h["path_error"] for h in self.history], "b-", label="Path Error")
+        ax.plot(ts, [h["threat_exposure"] for h in self.history], "r-", label="Threat")
+        ax.set_title("Route Quality")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        path = os.path.join(self.save_dir, f"training_plots_{self.num_timesteps}.png")
+        plt.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close()
+        if self.verbose:
+            print(f"Grafikler kaydedildi: {path}")
+
+    def _on_training_end(self):
+        if HAS_MATPLOTLIB and self.history:
+            self._save_plots()
+            if self.verbose:
+                print(f"Final grafikler: {self.save_dir}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -481,9 +649,11 @@ def main(args=None):
     models_dir = os.path.join("models", run_name)
     log_dir = os.path.join("logs", run_name)
     traj_dir = os.path.join(log_dir, "trajectories")
+    plots_dir = os.path.join(log_dir, "plots")
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(traj_dir, exist_ok=True)
+    os.makedirs(plots_dir, exist_ok=True)
     _save_dir = models_dir
 
     print("=" * 60)
@@ -493,7 +663,12 @@ def main(args=None):
     print(f"Models:  {models_dir}")
     print(f"Logs:    {log_dir}")
     print(f"Total:   {TOTAL_TIMESTEPS:,} timesteps")
-    print(f"Stages:  1 (0-150K) | 2 (150K-350K) | 3 (350K-600K)")
+    if UNIFIED_MAZE:
+        print(f"Mode:    BIRLESIK MAZE (pozisyon bazli stage, teleport yok)")
+    else:
+        print(f"Stages:  1 (0-150K) | 2 (150K-350K) | 3 (350K-600K)")
+    if not HAS_MATPLOTLIB:
+        print("Not:    Grafik kaydi icin: pip install matplotlib")
     print("=" * 60)
 
     # --- Environment ---
@@ -567,6 +742,13 @@ def main(args=None):
         log_freq=5_000,
     )
 
+    plot_saver = PlotSaverCallback(
+        save_dir=plots_dir,
+        record_freq=2048,
+        save_freq=50_000,
+        verbose=1,
+    )
+
     callbacks = CallbackList([
         curriculum_scheduler,
         route_monitor,
@@ -574,6 +756,7 @@ def main(args=None):
         progress_reporter,
         checkpoint_cb,
         training_log,
+        plot_saver,
     ])
 
     # --- Train ---
@@ -600,10 +783,12 @@ def main(args=None):
     model.save(os.path.join(models_dir, "final_model"))
     env.save(os.path.join(models_dir, "vec_normalize_final.pkl"))
     trajectory_recorder.flush()
+    plot_saver._on_training_end()
 
     print("\n" + "=" * 60)
     print("EGITIM TAMAMLANDI")
-    print(f"Model: {models_dir}/final_model.zip")
+    print(f"Model:  {models_dir}/final_model.zip")
+    print(f"Grafik: {plots_dir}/")
     print("=" * 60)
 
     env.close()

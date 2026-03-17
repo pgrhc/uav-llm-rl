@@ -59,7 +59,13 @@ class OffboardControl(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=10
         )
+        # __init__ içine ekle
+        self.declare_parameter('max_speed', 0.25)
+        self.declare_parameter('alpha', 0.15)
 
+        # timer_callback içinde oku
+        self.MAX_SETPOINT_STEP = self.get_parameter('max_speed').value
+        self.SETPOINT_ALPHA    = self.get_parameter('alpha').value
         self.offboard_control_mode_pub = self.create_publisher(
             OffboardControlMode, '/fmu/in/offboard_control_mode', qos_px4)
         self.trajectory_setpoint_pub = self.create_publisher(

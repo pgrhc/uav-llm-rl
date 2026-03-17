@@ -2,14 +2,9 @@
 """
 route_goal_navigator.py — Stage-aware goal & A* path publisher
 
-Curriculum learning egitimi sirasinda:
-  - Aktif stage'in walls.json'ini yukler
-  - Frontier-based hedef secer
-  - A* path hesaplar
-  - /goal_pose ve /plan publish eder
-  - follow_path.py ile birlikte calisir
-
-Stage degisimi: /route/set_stage (std_msgs/Int32) subscriber ile dinlenir.
+Iki mod:
+  - Ayri mazeler: /route/set_stage ile stage degisir, her stage farkli walls
+  - Birlesik maze: Tek walls, pozisyon bazli stage, fiziksel gecis
 """
 
 import rclpy
@@ -42,6 +37,15 @@ WALLS_PATHS = {
     3: os.path.join(WALLS_DIR, "maze_walls_stage3.json"),
 }
 
+# Birlesik maze
+UNIFIED_MAZE = True
+UNIFIED_ROWS, UNIFIED_COLS = 15, 45
+UNIFIED_ORIGIN = (0.0, 0.0)
+UNIFIED_SPAWN_CELL = (7, 7)
+WALLS_UNIFIED_PATH = os.path.join(WALLS_DIR, "maze_walls_unified.json")
+SECTION1_X_MAX = 50.0
+SECTION2_X_MAX = 125.0
+
 
 def _maze_origin(stage_origin):
     sr, sc = DRONE_SPAWN_CELL
@@ -50,9 +54,24 @@ def _maze_origin(stage_origin):
     return ox, oy
 
 
+def _maze_origin_unified():
+    sr, sc = UNIFIED_SPAWN_CELL
+    ox = UNIFIED_ORIGIN[0] - (sc + 0.5) * CELL_SIZE
+    oy = UNIFIED_ORIGIN[1] - (sr + 0.5) * CELL_SIZE
+    return ox, oy
+
+
 def _load_walls(path):
     with open(path) as f:
         return json.load(f)
+
+
+def _stage_from_x(x):
+    if x < SECTION1_X_MAX:
+        return 1
+    if x < SECTION2_X_MAX:
+        return 2
+    return 3
 
 
 ARRIVAL_DIST = 2.0
@@ -67,6 +86,13 @@ def _cell_to_world(r, c, stage_origin):
     return x, y
 
 
+def _cell_to_world_unified(r, c):
+    ox, oy = _maze_origin_unified()
+    x = ox + (c + 0.5) * CELL_SIZE
+    y = oy + (r + 0.5) * CELL_SIZE
+    return x, y
+
+
 def _world_to_cell(x, y, stage_origin):
     ox, oy = _maze_origin(stage_origin)
     c = int((x - ox) / CELL_SIZE)
@@ -74,7 +100,14 @@ def _world_to_cell(x, y, stage_origin):
     return max(0, min(ROWS - 1, r)), max(0, min(COLS - 1, c))
 
 
-def astar(walls, start, goal):
+def _world_to_cell_unified(x, y):
+    ox, oy = _maze_origin_unified()
+    c = int((x - ox) / CELL_SIZE)
+    r = int((y - oy) / CELL_SIZE)
+    return max(0, min(UNIFIED_ROWS - 1, r)), max(0, min(UNIFIED_COLS - 1, c))
+
+
+def astar(walls, start, goal, rows, cols):
     def h(a, b):
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
@@ -95,7 +128,7 @@ def astar(walls, start, goal):
             if walls[r][c][d]:
                 continue
             nb = (r + dr, c + dc)
-            if not (0 <= nb[0] < ROWS and 0 <= nb[1] < COLS):
+            if not (0 <= nb[0] < rows and 0 <= nb[1] < cols):
                 continue
             ng = cost + 1
             if nb not in g or ng < g[nb]:
@@ -110,9 +143,13 @@ class RouteGoalNavigator(Node):
     def __init__(self):
         super().__init__("route_goal_navigator")
 
+        self.unified = UNIFIED_MAZE
         self.current_stage = 1
-        self._stage_origin = STAGE_ORIGINS[self.current_stage]
-        self.walls = self._load_stage_walls(self.current_stage)
+        self._stage_origin = UNIFIED_ORIGIN if self.unified else STAGE_ORIGINS[self.current_stage]
+        self.walls = self._load_walls_impl()
+        self._rows = UNIFIED_ROWS if self.unified else ROWS
+        self._cols = UNIFIED_COLS if self.unified else COLS
+        self._spawn_cell = UNIFIED_SPAWN_CELL if self.unified else DRONE_SPAWN_CELL
 
         qos_path = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -145,11 +182,11 @@ class RouteGoalNavigator(Node):
         self.current_path_cells = []
 
         self.visited = set()
-        self.visited.add(DRONE_SPAWN_CELL)
+        self.visited.add(self._spawn_cell)
 
         self.get_logger().info(
-            f"RouteGoalNavigator baslatildi | Stage {self.current_stage} | "
-            f"Origin {self._stage_origin}"
+            f"RouteGoalNavigator baslatildi | Unified={self.unified} | "
+            f"Stage {self.current_stage} | Origin {self._stage_origin}"
         )
 
         self.timer = self.create_timer(0.5, self._loop)
@@ -157,15 +194,22 @@ class RouteGoalNavigator(Node):
     # ------------------------------------------------------------------ #
     # Stage management
     # ------------------------------------------------------------------ #
-    def _load_stage_walls(self, stage):
-        path = WALLS_PATHS.get(stage)
+    def _load_walls_impl(self):
+        if self.unified:
+            path = WALLS_UNIFIED_PATH
+        else:
+            path = WALLS_PATHS.get(self.current_stage)
         if path and os.path.exists(path):
             return _load_walls(path)
         self.get_logger().warn(f"walls.json bulunamadi: {path}")
+        cols = UNIFIED_COLS if self.unified else COLS
+        rows = UNIFIED_ROWS if self.unified else ROWS
         return [[{"N": True, "E": True, "S": True, "W": True}
-                 for _ in range(COLS)] for _ in range(ROWS)]
+                 for _ in range(cols)] for _ in range(rows)]
 
     def _cb_set_stage(self, msg: Int32):
+        if self.unified:
+            return  # Birlesik maze: stage pozisyondan
         new_stage = msg.data
         if new_stage == self.current_stage:
             return
@@ -175,10 +219,10 @@ class RouteGoalNavigator(Node):
 
         self.current_stage = new_stage
         self._stage_origin = STAGE_ORIGINS[new_stage]
-        self.walls = self._load_stage_walls(new_stage)
+        self.walls = self._load_walls_impl()
 
         self.visited.clear()
-        self.visited.add(DRONE_SPAWN_CELL)
+        self.visited.add(self._spawn_cell)
         self.navigating = False
         self.goal_cell = None
         self.current_path_cells = []
@@ -195,7 +239,11 @@ class RouteGoalNavigator(Node):
         self.pos[1] = msg.pose.pose.position.y
         self.pos[2] = msg.pose.pose.position.z
         self.odom_ok = True
-        cell = _world_to_cell(self.pos[0], self.pos[1], self._stage_origin)
+        if self.unified:
+            self.current_stage = _stage_from_x(self.pos[0])
+            cell = _world_to_cell_unified(self.pos[0], self.pos[1])
+        else:
+            cell = _world_to_cell(self.pos[0], self.pos[1], self._stage_origin)
         self.visited.add(cell)
 
     # ------------------------------------------------------------------ #
@@ -205,11 +253,16 @@ class RouteGoalNavigator(Node):
         if not self.odom_ok:
             return
 
-        curr_cell = _world_to_cell(
-            self.pos[0], self.pos[1], self._stage_origin)
+        if self.unified:
+            curr_cell = _world_to_cell_unified(self.pos[0], self.pos[1])
+        else:
+            curr_cell = _world_to_cell(self.pos[0], self.pos[1], self._stage_origin)
 
         if self.navigating and self.goal_cell:
-            gx, gy = _cell_to_world(*self.goal_cell, self._stage_origin)
+            if self.unified:
+                gx, gy = _cell_to_world_unified(*self.goal_cell)
+            else:
+                gx, gy = _cell_to_world(*self.goal_cell, self._stage_origin)
             dist = math.hypot(self.pos[0] - gx, self.pos[1] - gy)
             if dist < ARRIVAL_DIST:
                 self.get_logger().info(
@@ -243,7 +296,7 @@ class RouteGoalNavigator(Node):
         if goal is None:
             return
 
-        path_cells = astar(self.walls, curr_cell, goal)
+        path_cells = astar(self.walls, curr_cell, goal, self._rows, self._cols)
         if not path_cells:
             self.get_logger().warn(f"A* yol bulamadi: {curr_cell} -> {goal}")
             self.visited.add(goal)
@@ -266,12 +319,12 @@ class RouteGoalNavigator(Node):
             (r + dr, c + dc)
             for d, (dr, dc) in DIRS_RC.items()
             if not self.walls[r][c][d]
-            and 0 <= r + dr < ROWS and 0 <= c + dc < COLS
+            and 0 <= r + dr < self._rows and 0 <= c + dc < self._cols
             and (r + dr, c + dc) not in self.visited
         ]
 
     def _nearest_unvisited(self, curr_cell):
-        all_cells = {(r, c) for r in range(ROWS) for c in range(COLS)}
+        all_cells = {(r, c) for r in range(self._rows) for c in range(self._cols)}
         unvisited = sorted(
             all_cells - self.visited,
             key=lambda nb: abs(nb[0] - curr_cell[0]) + abs(nb[1] - curr_cell[1]),
@@ -290,7 +343,10 @@ class RouteGoalNavigator(Node):
         msg.header.frame_id = "map"
 
         for r, c in path_cells:
-            wx, wy = _cell_to_world(r, c, self._stage_origin)
+            if self.unified:
+                wx, wy = _cell_to_world_unified(r, c)
+            else:
+                wx, wy = _cell_to_world(r, c, self._stage_origin)
             pose = PoseStamped()
             pose.header = msg.header
             pose.pose.position.x = wx
@@ -303,7 +359,10 @@ class RouteGoalNavigator(Node):
 
     def _publish_goal(self, goal_cell):
         r, c = goal_cell
-        x, y = _cell_to_world(r, c, self._stage_origin)
+        if self.unified:
+            x, y = _cell_to_world_unified(r, c)
+        else:
+            x, y = _cell_to_world(r, c, self._stage_origin)
         msg = PoseStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "map"

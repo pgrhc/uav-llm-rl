@@ -25,7 +25,7 @@ import os
 # ── Maze parametreleri ────────────────────────────────────────────────────────
 ROWS             = 15
 COLS             = 15
-CELL_SIZE        = 5.0
+CELL_SIZE        = 3.0
 DRONE_SPAWN_CELL = (ROWS // 2, COLS // 2)
 
 SPAWN_R, SPAWN_C = DRONE_SPAWN_CELL

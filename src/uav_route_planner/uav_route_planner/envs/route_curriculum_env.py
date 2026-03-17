@@ -48,9 +48,23 @@ from geometry_msgs.msg import PoseStamped
 from cv_bridge import CvBridge
 import cv2
 
-from uav_route_planner.maze_curriculum_world import (
-    STAGE_ORIGINS, WALLS_PATHS, ACTORS_JSON_PATH,
-)
+# Curriculum maze sabitleri (maze_curriculum_world.py ile ayni degerler)
+_WALLS_DIR = "/home/ubuntu/Desktop"
+STAGE_ORIGINS = {1: (0.0, 0.0), 2: (1000.0, 0.0), 3: (2000.0, 0.0)}
+WALLS_PATHS = {
+    1: os.path.join(_WALLS_DIR, "maze_walls_stage1.json"),
+    2: os.path.join(_WALLS_DIR, "maze_walls_stage2.json"),
+    3: os.path.join(_WALLS_DIR, "maze_walls_stage3.json"),
+}
+ACTORS_JSON_PATH = os.path.join(_WALLS_DIR, "maze_actors_stage3.json")
+ACTORS_UNIFIED_JSON_PATH = os.path.join(_WALLS_DIR, "maze_actors_unified.json")
+WALLS_UNIFIED_PATH = os.path.join(_WALLS_DIR, "maze_walls_unified.json")
+
+# Birlesik maze: tek maze, pozisyon bazli stage, teleport yok
+UNIFIED_MAZE = True  # True = birlesik maze, False = 3 ayri maze
+UNIFIED_ORIGIN = (0.0, 0.0)
+SECTION1_X_MAX = 50.0
+SECTION2_X_MAX = 125.0
 
 
 class RouteCurriculumEnv(gym.Env):
@@ -72,9 +86,9 @@ class RouteCurriculumEnv(gym.Env):
     LIDAR_END_IDX = 39
     NUM_PATH_WPS = 5
 
-    DRONE_MODEL_NAME = "x500_mono_cam"
+    DRONE_MODEL_NAME = "x500_mono_cam_0"
     GZ_WORLD_NAME = "default"
-    RESET_STABILIZE_SEC = 2.0
+    RESET_STABILIZE_SEC = 5.0  # Teleport sonrasi EKF stabilizasyonu icin
 
     ACTOR_COLLISION_RADIUS = 1.5
     ACTOR_COLLISION_Z_MAX = 3.5
@@ -83,7 +97,11 @@ class RouteCurriculumEnv(gym.Env):
         super().__init__()
 
         self.curriculum_stage = curriculum_stage
-        self._stage_origin = STAGE_ORIGINS[curriculum_stage]
+        self.unified_maze = UNIFIED_MAZE
+        if self.unified_maze:
+            self._stage_origin = UNIFIED_ORIGIN
+        else:
+            self._stage_origin = STAGE_ORIGINS[curriculum_stage]
         self._spawn_z = 1.5
 
         self.action_space = spaces.Box(
@@ -186,19 +204,30 @@ class RouteCurriculumEnv(gym.Env):
         self._spin_thread.start()
         time.sleep(1.0)
 
-        if self.curriculum_stage == 3:
+        if self.curriculum_stage == 3 or self.unified_maze:
             self._load_actor_data()
 
     # ------------------------------------------------------------------ #
     # Curriculum API
     # ------------------------------------------------------------------ #
+    def _stage_from_position(self, x: float) -> int:
+        """Pozisyona gore stage (birlesik maze)."""
+        if x < SECTION1_X_MAX:
+            return 1
+        if x < SECTION2_X_MAX:
+            return 2
+        return 3
+
     def set_curriculum_stage(self, stage: int):
         self.curriculum_stage = stage
-        self._stage_origin = STAGE_ORIGINS[stage]
+        if self.unified_maze:
+            self._stage_origin = UNIFIED_ORIGIN
+        else:
+            self._stage_origin = STAGE_ORIGINS[stage]
         self.node.get_logger().info(
             f"Curriculum stage → {stage}  origin={self._stage_origin}"
         )
-        if stage == 3:
+        if stage == 3 or self.unified_maze:
             self._load_actor_data()
         else:
             self.actor_trajectories = []
@@ -367,7 +396,8 @@ class RouteCurriculumEnv(gym.Env):
             return True
         if self._check_lidar_collision():
             return True
-        if self.curriculum_stage == 3 and self._check_actor_collision():
+        stage = self._stage_from_position(self.drone_x) if self.unified_maze else self.curriculum_stage
+        if stage == 3 and self._check_actor_collision():
             return True
         return False
 
@@ -413,8 +443,9 @@ class RouteCurriculumEnv(gym.Env):
     # Actor trajectory (analytical)
     # ------------------------------------------------------------------ #
     def _load_actor_data(self):
+        path = ACTORS_UNIFIED_JSON_PATH if self.unified_maze else ACTORS_JSON_PATH
         try:
-            with open(ACTORS_JSON_PATH) as f:
+            with open(path) as f:
                 data = json.load(f)
             self.actor_trajectories = data.get("actors", [])
             self.actor_ref_time = data.get("spawn_time", time.time())
@@ -458,7 +489,10 @@ class RouteCurriculumEnv(gym.Env):
     # Teleportation / soft reset
     # ------------------------------------------------------------------ #
     def _soft_reset_drone(self):
-        x, y = self._stage_origin
+        if self.unified_maze:
+            x, y = UNIFIED_ORIGIN
+        else:
+            x, y = self._stage_origin
         z = self._spawn_z
         cmd = (
             f"gz service -s /world/{self.GZ_WORLD_NAME}/set_pose "
@@ -523,6 +557,10 @@ class RouteCurriculumEnv(gym.Env):
 
         self._publish_waypoint(wp_x, wp_y, wp_z, wp_yaw)
         self._wait_obs(timeout=0.3)
+
+        # Birlesik maze: stage pozisyondan hesapla
+        if self.unified_maze:
+            self.curriculum_stage = self._stage_from_position(self.drone_x)
 
         # ══════════════════════════════════════════════════════════════
         # FIXED REWARD (identical formula across all stages)

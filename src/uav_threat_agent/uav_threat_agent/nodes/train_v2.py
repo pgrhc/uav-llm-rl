@@ -10,6 +10,8 @@ import gymnasium as gym
 import uav_threat_agent
 
 import rclpy
+from rclpy.node import Node
+from std_msgs.msg import Int32
 import numpy as np
 
 from stable_baselines3 import PPO
@@ -18,272 +20,215 @@ from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback,
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.utils import set_random_seed
 
-_model = None
-_env = None
-_models_dir = None
-_training_logger = None
+TOPIC_SET_STAGE = "/curriculum/set_stage"   
+
+_ros_node: "TrainerROSNode | None" = None
+
+
+class TrainerROSNode(Node):
+    """
+    Sadece /curriculum/set_stage topic'ine publish eder.
+    maze_curriculum.py bu komutu alarak Gazebo'yu yönetir.
+    """
+
+    def __init__(self):
+        super().__init__("trainer_curriculum_publisher")
+        self._pub = self.create_publisher(Int32, TOPIC_SET_STAGE, 10)
+        self.get_logger().info(f"TrainerROSNode hazir — PUB {TOPIC_SET_STAGE}")
+
+    def publish_stage(self, stage: int):
+        msg = Int32()
+        msg.data = stage
+        self._pub.publish(msg)
+        self.get_logger().info(f"Stage {stage} publish edildi -> {TOPIC_SET_STAGE}")
+
+
+
+_model            = None
+_env              = None
+_models_dir       = None
+_training_logger  = None
 
 
 def signal_handler(sig, frame):
-    print("\n\n🛑 Ctrl+C algılandı! Model kaydediliyor...")
+    print("\n\nCtrl+C algilandi! Model kaydediliyor...")
     try:
         if _model is not None and _models_dir is not None:
             save_path = os.path.join(_models_dir, "interrupted_model")
             _model.save(save_path)
-            print(f"✅ Model kaydedildi: {save_path}.zip")
-        
+            print(f"Model kaydedildi: {save_path}.zip")
+
         if _env is not None and _models_dir is not None:
             vec_path = os.path.join(_models_dir, "vec_normalize_interrupted.pkl")
             _env.save(vec_path)
-            print(f"✅ VecNormalize kaydedildi: {vec_path}")
-        
+            print(f"VecNormalize kaydedildi: {vec_path}")
+
         if _training_logger is not None:
             _training_logger._flush()
-            print(f"✅ Training log kaydedildi")
-            
+            print("Training log kaydedildi")
+
     except Exception as e:
-        print(f"⚠️  Kayıt hatası: {e}")
+        print(f"Kayit hatasi: {e}")
     finally:
         if _env is not None:
             _env.close()
         if rclpy.ok():
             rclpy.shutdown()
-        print("\n👋 Güvenli şekilde kapatıldı.")
+        print("Guvenli sekilde kapatildi.")
         sys.exit(0)
-
 
 
 class LearningQualityMonitor(BaseCallback):
     def __init__(self, check_freq: int = 10_000, verbose: int = 1):
         super().__init__(verbose)
-        self.check_freq = check_freq
-        self.scores_buffer = []
+        self.check_freq     = check_freq
+        self.scores_buffer  = []
         self.targets_buffer = []
-        self.critical_objects = [] 
+        self.critical_objects = []
 
     def _on_step(self) -> bool:
         infos = self.locals.get("infos", None)
         if infos is None:
             return True
-
         for info in infos:
-            threats = info.get("top_threats", [])
-            for threat in threats:
-                score = float(threat.get("score", 0.0))
-                target = float(threat.get("TRGT", 0.0))
+            for threat in info.get("top_threats", []):
+                score    = float(threat.get("score", 0.0))
+                target   = float(threat.get("TRGT",  0.0))
                 class_id = threat.get("cls", "")
-                dist = float(threat.get("dist", 999.0))
-                
+                dist     = float(threat.get("dist",  999.0))
                 self.scores_buffer.append(score)
                 self.targets_buffer.append(target)
-                
-                is_critical = (class_id in ["Person", "Unknown"]) and (dist < 5.0) and (target > 0.5)
-                if is_critical:
+                if class_id in ["Person", "Unknown"] and dist < 5.0 and target > 0.5:
                     self.critical_objects.append((score, target, class_id, dist))
 
         if self.num_timesteps % self.check_freq == 0:
             self._analyze_and_report()
-            self.scores_buffer = []
-            self.targets_buffer = []
+            self.scores_buffer    = []
+            self.targets_buffer   = []
             self.critical_objects = []
-
         return True
 
     def _analyze_and_report(self):
-        if len(self.scores_buffer) == 0:
+        if not self.scores_buffer:
             return
-
-        scores = np.array(self.scores_buffer)
+        scores  = np.array(self.scores_buffer)
         targets = np.array(self.targets_buffer)
-        mae = float(np.mean(np.abs(scores - targets)))
-        if np.std(scores) > 0.01 and np.std(targets) > 0.01:
-            correlation = float(np.corrcoef(scores, targets)[0, 1])
-        else:
-            correlation = 0.0
-        if len(self.critical_objects) > 0:
-            critical_misses = sum(1 for s, t, _, _ in self.critical_objects if s < 0.5)
-            critical_miss_rate = float(critical_misses / len(self.critical_objects))
-        else:
-            critical_miss_rate = 0.0
-        zero_ratio = float(np.sum(scores < 0.1) / scores.size)
-        high_ratio = float(np.sum(scores > 0.5) / scores.size)
-        score_std = float(np.std(scores))
-        self.logger.record("quality/mae", mae)
-        self.logger.record("quality/correlation", correlation)
-        self.logger.record("quality/critical_miss_rate", critical_miss_rate)
-        self.logger.record("quality/score_std", score_std)
-        self.logger.record("quality/zero_ratio", zero_ratio)
-        self.logger.record("quality/high_ratio", high_ratio)
+        mae     = float(np.mean(np.abs(scores - targets)))
+        corr    = (float(np.corrcoef(scores, targets)[0, 1])
+                   if np.std(scores) > 0.01 and np.std(targets) > 0.01 else 0.0)
+        crit_miss = (sum(1 for s, t, _, _ in self.critical_objects if s < 0.5)
+                     / len(self.critical_objects) if self.critical_objects else 0.0)
+        zero_r  = float(np.sum(scores < 0.1) / scores.size)
+        high_r  = float(np.sum(scores > 0.5) / scores.size)
+        std_s   = float(np.std(scores))
 
-        print("\n" + "=" * 70)
-        print(f"🎯 LEARNING QUALITY CHECK @ {self.num_timesteps:,} timesteps")
-        print("=" * 70)
-        print(f"  MAE (Score-Target):     {mae:.3f}")
-        print(f"  Correlation:            {correlation:+.3f}")
-        print(f"  Critical Miss Rate:     {critical_miss_rate:.1%}")
-        print(f"  Score Std:              {score_std:.3f}")
-        print(f"  Zero Ratio:             {zero_ratio:.1%}")
-        print(f"  High Ratio:             {high_ratio:.1%}")
+        self.logger.record("quality/mae",                mae)
+        self.logger.record("quality/correlation",        corr)
+        self.logger.record("quality/critical_miss_rate", crit_miss)
+        self.logger.record("quality/score_std",          std_s)
+        self.logger.record("quality/zero_ratio",         zero_r)
+        self.logger.record("quality/high_ratio",         high_r)
+
+        print(f"\n{'='*70}")
+        print(f"LEARNING QUALITY CHECK @ {self.num_timesteps:,} timesteps")
+        print(f"{'='*70}")
+        print(f"  MAE:              {mae:.3f}")
+        print(f"  Correlation:      {corr:+.3f}")
+        print(f"  Critical Miss:    {crit_miss:.1%}")
+        print(f"  Score Std:        {std_s:.3f}")
+        print(f"  Zero / High Ratio:{zero_r:.1%} / {high_r:.1%}")
 
         warnings = []
-        
-        if mae > 0.35:
-            warnings.append("🚨 CRITICAL: MAE > 0.35 → Ajan hedefi anlamıyor!")
-        elif mae > 0.25:
-            warnings.append("⚠️  WARNING: MAE > 0.25 → Öğrenme yavaş")
-        
-        if critical_miss_rate > 0.5:
-            warnings.append("🚨 CRITICAL: Critical miss > 50% → Yakın tehditler görülmüyor!")
-        elif critical_miss_rate > 0.3:
-            warnings.append("⚠️  WARNING: Critical miss > 30%")
-        
-        if correlation < 0.1:
-            warnings.append("⚠️  WARNING: Low correlation → Skorlar rastgele")
-        
-        if score_std < 0.05:
-            warnings.append("⚠️  WARNING: Std < 0.05 → Hep aynı değer veriyor")
-
-        if warnings:
-            print("\n🚨 ALARMLAR:")
-            for w in warnings:
-                print(f"  {w}")
-        else:
-            print("\n✅ Öğrenme kalitesi sağlıklı görünüyor")
-        
-        print("=" * 70 + "\n")
+        if mae > 0.35:        warnings.append("CRITICAL: MAE > 0.35")
+        elif mae > 0.25:      warnings.append("WARNING:  MAE > 0.25")
+        if crit_miss > 0.5:   warnings.append("CRITICAL: Critical miss > 50%")
+        elif crit_miss > 0.3: warnings.append("WARNING:  Critical miss > 30%")
+        if corr < 0.1:        warnings.append("WARNING:  Low correlation")
+        if std_s < 0.05:      warnings.append("WARNING:  Std < 0.05 (collapsed)")
+        for w in warnings: print(f"  {w}")
+        if not warnings: print("  Ogrenme kalitesi saglikli")
+        print(f"{'='*70}\n")
 
 
 class ProgressReporter(BaseCallback):
     def __init__(self, target_steps: int, report_freq: int = 5_000):
         super().__init__()
         self.target_steps = int(target_steps)
-        self.report_freq = int(report_freq)
-        self.start_time = time.time()
-        self.last_report_time = self.start_time
+        self.report_freq  = int(report_freq)
+        self.start_time   = time.time()
+        self.last_time    = self.start_time
 
     def _on_step(self) -> bool:
         if self.num_timesteps % self.report_freq == 0:
-            self._print_progress()
+            now      = time.time()
+            elapsed  = now - self.start_time
+            interval = now - self.last_time
+            fps      = self.report_freq / interval if interval > 0 else 0.0
+            rem_sec  = (max(0, self.target_steps - self.num_timesteps) * elapsed
+                        / self.num_timesteps) if self.num_timesteps > 0 else 0.0
+            h, m     = int(rem_sec // 3600), int((rem_sec % 3600) // 60)
+            print(f"\n{self.num_timesteps:,} / {self.target_steps:,} | FPS: {fps:.1f} | Kalan: ~{h}h {m}m")
+            self.last_time = now
         return True
-
-    def _print_progress(self):
-        now = time.time()
-        elapsed_total = now - self.start_time
-        elapsed_interval = now - self.last_report_time
-
-        fps = self.report_freq / elapsed_interval if elapsed_interval > 0 else 0.0
-
-        if self.num_timesteps > 0:
-            sec_per_step = elapsed_total / self.num_timesteps
-            remaining_steps = max(0, self.target_steps - self.num_timesteps)
-            remaining_sec = remaining_steps * sec_per_step
-            hours = int(remaining_sec // 3600)
-            mins = int((remaining_sec % 3600) // 60)
-        else:
-            hours, mins = 0, 0
-
-        print(f"\n⏱️  {self.num_timesteps:,} / {self.target_steps:,} timesteps")
-        print(f"   FPS: {fps:.1f} | Kalan: ~{hours}h {mins}m")
-
-        self.last_report_time = now
 
 
 class EnvironmentMetricsLogger(BaseCallback):
     def __init__(self, log_freq: int = 10_000):
         super().__init__()
-        self.log_freq = int(log_freq)
-        self.person_count = 0
-        self.unknown_count = 0
+        self.log_freq         = int(log_freq)
+        self.person_count     = 0
         self.high_score_count = 0
-        self.total_objects = 0
+        self.total_objects    = 0
 
     def _on_step(self) -> bool:
         infos = self.locals.get("infos", None)
-        if infos is not None:
+        if infos:
             for info in infos:
-                top = info.get("top_threats", None)
-                if top is None:
-                    continue
-
-                for threat in top:
+                for threat in info.get("top_threats") or []:
                     self.total_objects += 1
-                    cls = threat.get("cls", "")
-                    score = float(threat.get("score", 0.0))
+                    if threat.get("cls") == "Person": self.person_count += 1
+                    if float(threat.get("score", 0.0)) > 0.5: self.high_score_count += 1
 
-                    if cls == "Person":
-                        self.person_count += 1
-                    elif cls == "Unknown":
-                        self.unknown_count += 1
-
-                    if score > 0.5:
-                        self.high_score_count += 1
-
-        if (self.num_timesteps % self.log_freq == 0) and (self.total_objects > 0):
-            person_ratio = self.person_count / self.total_objects
-            high_score_ratio = self.high_score_count / self.total_objects
-
-            self.logger.record("env/person_detection_ratio", person_ratio)
-            self.logger.record("env/high_score_ratio", high_score_ratio)
-
-            print(f"\n📈 ENV METRICS @ {self.num_timesteps:,}")
-            print(f"   Person Detection: {person_ratio:.1%}")
-            print(f"   High Score Ratio: {high_score_ratio:.1%}")
-
-            self.person_count = 0
-            self.unknown_count = 0
-            self.high_score_count = 0
-            self.total_objects = 0
-
+        if self.num_timesteps % self.log_freq == 0 and self.total_objects > 0:
+            p_r = self.person_count     / self.total_objects
+            h_r = self.high_score_count / self.total_objects
+            self.logger.record("env/person_detection_ratio", p_r)
+            self.logger.record("env/high_score_ratio",       h_r)
+            print(f"\nENV METRICS @ {self.num_timesteps:,}  | Person: {p_r:.1%}  | HighScore: {h_r:.1%}")
+            self.person_count = self.high_score_count = self.total_objects = 0
         return True
 
 
 class TrainingLogger(BaseCallback):
     def __init__(self, log_file: str, log_freq: int = 5_000, flush_every: int = 10_000):
         super().__init__()
-        self.log_file = log_file
-        self.log_freq = int(log_freq)
-        self.flush_every = int(flush_every)
-        self.logs = []
+        self.log_file   = log_file
+        self.log_freq   = int(log_freq)
+        self.flush_every= int(flush_every)
+        self.logs       = []
 
     def _on_step(self) -> bool:
         if self.num_timesteps % self.log_freq == 0:
-            ep_buf = list(self.model.ep_info_buffer) if hasattr(self.model, "ep_info_buffer") else []
-
-            if len(ep_buf) > 0:
-                ep_rewards = [e.get("r", 0.0) for e in ep_buf]
-                ep_lens = [e.get("l", 0.0) for e in ep_buf]
-                ep_rew_mean = float(np.mean(ep_rewards))
-                ep_len_mean = float(np.mean(ep_lens))
-            else:
-                ep_rew_mean = 0.0
-                ep_len_mean = 0.0
-
-            try:
-                approx_kl = float(self.model.logger.name_to_value.get("train/approx_kl", 0.0))
-                clip_frac = float(self.model.logger.name_to_value.get("train/clip_fraction", 0.0))
-                policy_loss = float(self.model.logger.name_to_value.get("train/policy_gradient_loss", 0.0))
-                value_loss = float(self.model.logger.name_to_value.get("train/value_loss", 0.0))
-            except (AttributeError, KeyError):
-                approx_kl = 0.0
-                clip_frac = 0.0
-                policy_loss = 0.0
-                value_loss = 0.0
-
-            log_entry = {
-                "timesteps": int(self.num_timesteps),
-                "time": datetime.now().isoformat(),
-                "ep_rew_mean": ep_rew_mean,
-                "ep_len_mean": ep_len_mean,
-                "approx_kl": approx_kl,
-                "clip_fraction": clip_frac,
-                "policy_loss": policy_loss,
-                "value_loss": value_loss,
+            ep_buf = list(getattr(self.model, "ep_info_buffer", []))
+            entry  = {
+                "timesteps":   int(self.num_timesteps),
+                "time":        datetime.now().isoformat(),
+                "ep_rew_mean": float(np.mean([e.get("r", 0.0) for e in ep_buf])) if ep_buf else 0.0,
+                "ep_len_mean": float(np.mean([e.get("l", 0.0) for e in ep_buf])) if ep_buf else 0.0,
             }
-            self.logs.append(log_entry)
-
+            try:
+                nl = self.model.logger.name_to_value
+                entry.update({
+                    "approx_kl":   float(nl.get("train/approx_kl", 0.0)),
+                    "clip_frac":   float(nl.get("train/clip_fraction", 0.0)),
+                    "policy_loss": float(nl.get("train/policy_gradient_loss", 0.0)),
+                    "value_loss":  float(nl.get("train/value_loss", 0.0)),
+                })
+            except (AttributeError, KeyError):
+                pass
+            self.logs.append(entry)
             if self.num_timesteps % self.flush_every == 0:
                 self._flush()
-
         return True
 
     def _flush(self):
@@ -292,28 +237,45 @@ class TrainingLogger(BaseCallback):
             with open(self.log_file, "w", encoding="utf-8") as f:
                 json.dump(self.logs, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            print(f"⚠️  JSON log hatası: {e}")
+            print(f"JSON log hatasi: {e}")
+
+
 
 class CurriculumScheduler(BaseCallback):
+    """
+    Timestep sinirlarina gore stage hesaplar ve
+    /curriculum/set_stage topic'ine publish eder.
+    maze_curriculum.py bu komutu alarak:
+      Stage 1 -> sadece statik aktorler
+      Stage 2 -> statikler silinir, dinamik aktorler
+      Stage 3 -> dinamikler kalir + statikler eklenir
+    """
+
     def __init__(self, stage1_end: int, stage2_end: int, verbose: int = 1):
         super().__init__(verbose)
-        self.stage1_end = int(stage1_end)
-        self.stage2_end = int(stage2_end)
+        self.stage1_end  = int(stage1_end)
+        self.stage2_end  = int(stage2_end)
         self._last_stage = None
 
-    def _set_stage(self, stage: int):
-        env0 = self.training_env.envs[0]
-        real_env = getattr(env0, "unwrapped", env0)
-
-        if hasattr(real_env, "set_curriculum_stage"):
-            real_env.set_curriculum_stage(stage)
+    def _publish_stage(self, stage: int):
+        global _ros_node
+        if _ros_node is not None:
+            _ros_node.publish_stage(stage)
         else:
-            print("⚠️ Env'de set_curriculum_stage yok!")
+            print(f"WARNING: _ros_node None, stage {stage} publish edilemedi!")
+
+        try:
+            env0     = self.training_env.envs[0]
+            real_env = getattr(env0, "unwrapped", env0)
+            if hasattr(real_env, "set_curriculum_stage"):
+                real_env.set_curriculum_stage(stage)
+        except Exception:
+            pass
 
     def _on_training_start(self) -> None:
-        self._set_stage(1)
+        self._publish_stage(1)
         self._last_stage = 1
-        print("🎓 Curriculum Stage = 1 (Person only)")
+        print(f"\nCurriculum Stage = 1  (0 - {self.stage1_end:,} timesteps)  -> STATIC only")
 
     def _on_step(self) -> bool:
         t = int(self.num_timesteps)
@@ -326,72 +288,88 @@ class CurriculumScheduler(BaseCallback):
             stage = 3
 
         if stage != self._last_stage:
-            self._set_stage(stage)
+            self._publish_stage(stage)
             self._last_stage = stage
-            print(f"🎓 Curriculum Stage = {stage}")
+
+            desc = {
+                1: "STATIC only",
+                2: "DYNAMIC only  (statics removed)",
+                3: "MIXED  (static + dynamic)",
+            }.get(stage, "?")
+            print(f"\nCurriculum Stage = {stage}  [{t:,} timesteps]  -> {desc}")
 
         return True
 
 
 def main(args=None):
-    global _model, _env, _models_dir, _training_logger
-    
+    global _model, _env, _models_dir, _training_logger, _ros_node
+
     if not rclpy.ok():
         rclpy.init(args=args)
 
+
+    _ros_node = TrainerROSNode()
+    import threading
+    ros_thread = threading.Thread(target=rclpy.spin, args=(_ros_node,), daemon=True)
+    ros_thread.start()
+
     print("=" * 70)
-    print("🚀 THREAT AGENT EĞİTİMİ V2")
+    print("THREAT AGENT EGITIMI V2")
     print("=" * 70)
     signal.signal(signal.SIGINT, signal_handler)
+
     SEED = 42
     set_random_seed(SEED)
     np.random.seed(SEED)
-    run_name = f"PPO-V2-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+    run_name   = f"PPO-V2-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     models_dir = f"models/{run_name}"
-    log_dir = f"logs/{run_name}"
-    _models_dir = models_dir
-    
+    log_dir    = f"logs/{run_name}"
+    _models_dir= models_dir
     for d in [models_dir, log_dir]:
         os.makedirs(d, exist_ok=True)
 
     HYPERPARAMS = {
-        "learning_rate": 3e-4,      
-        "n_steps": 2048,           
-        "batch_size": 256,        
-        "n_epochs": 10,      
-        "gamma": 0.99,              
-        "gae_lambda": 0.95,  
-        "clip_range": 0.2,   
-        "ent_coef": 0.01, 
-        "vf_coef": 0.5,      
+        "learning_rate": 3e-4,
+        "n_steps":       2048,
+        "batch_size":    256,
+        "n_epochs":      10,
+        "gamma":         0.99,
+        "gae_lambda":    0.95,
+        "clip_range":    0.2,
+        "ent_coef":      0.01,
+        "vf_coef":       0.5,
         "max_grad_norm": 0.5,
     }
 
     VEC_NORMALIZE_PARAMS = {
-        "norm_obs": True,          
-        "norm_reward": False,  
-        "clip_obs": 10.0,           
-        "clip_reward": 5.0,         
-        "gamma": HYPERPARAMS["gamma"], 
+        "norm_obs":    True,
+        "norm_reward": False,
+        "clip_obs":    10.0,
+        "clip_reward": 5.0,
+        "gamma":       HYPERPARAMS["gamma"],
     }
 
+   
+    TOTAL_TIMESTEPS = 204_800
+    STAGE1_END      = 70_000   
+    STAGE2_END      = 140_000  
+                             
+
     meta = {
-        "run_name": run_name,
-        "created_at": datetime.now().isoformat(),
-        "seed": SEED,
-        "env_id": "ThreatAgent-v11",
-        "env_version": "V2",  
-        "algo": "PPO",
+        "run_name":       run_name,
+        "created_at":     datetime.now().isoformat(),
+        "seed":           SEED,
+        "env_id":         "ThreatAgent-v12",
+        "algo":           "PPO",
+        "curriculum": {
+            "stage1_end": STAGE1_END,
+            "stage2_end": STAGE2_END,
+            "total":      TOTAL_TIMESTEPS,
+            "ros_topic":  TOPIC_SET_STAGE,
+        },
         "hyperparameters": HYPERPARAMS,
-        "vec_normalize": VEC_NORMALIZE_PARAMS,
-        "improvements": [
-            "Reduced n_steps: 4096 → 2048",
-            "Reduced batch_size: 1024 → 256",
-            "Reduced gamma: 0.995 → 0.99",
-            "Added entropy: 0.01",
-            "Better quality monitoring (MAE-based)",
-            "Total timesteps: 204,800",
-        ]
+        "vec_normalize":   VEC_NORMALIZE_PARAMS,
     }
     with open(os.path.join(log_dir, "run_meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
@@ -405,88 +383,80 @@ def main(args=None):
             pass
         return env
 
-    env = DummyVecEnv([make_env])
-    env = VecNormalize(env, **VEC_NORMALIZE_PARAMS)
+    env  = DummyVecEnv([make_env])
+    env  = VecNormalize(env, **VEC_NORMALIZE_PARAMS)
     _env = env
 
     model = PPO(
-        "MlpPolicy", 
-        env,
-        device="cuda",
-        verbose=1,
-        tensorboard_log=log_dir,
-        seed=SEED,
+        "MlpPolicy", env,
+        device="cuda", verbose=1,
+        tensorboard_log=log_dir, seed=SEED,
         policy_kwargs=dict(net_arch=dict(pi=[256, 256, 128], vf=[256, 256, 128])),
-        **HYPERPARAMS
+        **HYPERPARAMS,
     )
     _model = model
-    TOTAL_TIMESTEPS = 204_800
 
-    checkpoint_cb = CheckpointCallback(
-        save_freq=4096, 
-        save_path=models_dir,
-        name_prefix="ppo_threat",
-        save_vecnormalize=True,
-        verbose=1,
-    )
-    quality_monitor = LearningQualityMonitor(check_freq=4096)
-    
-    progress_reporter = ProgressReporter(target_steps=TOTAL_TIMESTEPS, report_freq=4096)
-    env_metrics_logger = EnvironmentMetricsLogger(log_freq=4096)
-    training_logger = TrainingLogger(
-        log_file=os.path.join(log_dir, "training_log.json"),
-        log_freq=5_000,
-        flush_every=20_000,
+
+    training_logger   = TrainingLogger(
+        log_file    = os.path.join(log_dir, "training_log.json"),
+        log_freq    = 5_000,
+        flush_every = 20_000,
     )
     _training_logger = training_logger
-    curriculum_cb = CurriculumScheduler(stage1_end=70_000, stage2_end=140_000)
+
+   
+    curriculum_cb = CurriculumScheduler(
+        stage1_end = STAGE1_END,
+        stage2_end = STAGE2_END,
+    )
+
     callbacks = CallbackList([
-        checkpoint_cb,
-        quality_monitor,     
-        progress_reporter,
-        env_metrics_logger,
+        CheckpointCallback(
+            save_freq        = 4096,
+            save_path        = models_dir,
+            name_prefix      = "ppo_threat",
+            save_vecnormalize= True,
+            verbose          = 1,
+        ),
+        LearningQualityMonitor(check_freq=4096),
+        ProgressReporter(target_steps=TOTAL_TIMESTEPS, report_freq=4096),
+        EnvironmentMetricsLogger(log_freq=4096),
         training_logger,
-        curriculum_cb,
+        curriculum_cb,      
     ])
 
-    print(f"\n📊 Eğitim Ayarları (OPTIMIZED V2):")
+    print(f"\nEgitim Ayarlari:")
     print(f"  Run Name:       {run_name}")
     print(f"  Total Steps:    {TOTAL_TIMESTEPS:,}")
-    print(f"  Learning Rate:  {HYPERPARAMS['learning_rate']}")
-    print(f"  N Steps:        {HYPERPARAMS['n_steps']} (↓ from 4096)")
-    print(f"  Batch Size:     {HYPERPARAMS['batch_size']} (↓ from 1024)")
-    print(f"  Gamma:          {HYPERPARAMS['gamma']} (↓ from 0.995)")
-    print(f"  Entropy Coef:   {HYPERPARAMS['ent_coef']}")
-    print(f"  Seed:           {SEED}")
-    print(f"\n  Quality Check:  MAE-based (every 10k steps)")
-    print(f"  Critical Alarm: MAE > 0.35 or Critical Miss > 50%")
-    print(f"\n  TensorBoard:    tensorboard --logdir={log_dir}")
-    print(f"  Ctrl+C:         Güvenli kayıt (interrupted_model)")
+    print(f"  Stage 1 (static only):   0          -> {STAGE1_END:,}")
+    print(f"  Stage 2 (dynamic only):  {STAGE1_END:,} -> {STAGE2_END:,}")
+    print(f"  Stage 3 (mixed):         {STAGE2_END:,} -> {TOTAL_TIMESTEPS:,}")
+    print(f"\n  Stage komutu topic:  {TOPIC_SET_STAGE}")
+    print(f"  maze_curriculum.py bu topic'i dinlemeli!\n")
+    print(f"  TensorBoard: tensorboard --logdir={log_dir}")
     print("=" * 70 + "\n")
-    print("🚀 EĞİTİM BAŞLIYOR (204,800 timesteps, continuous monitoring)\n")
 
     model.learn(
-        total_timesteps=TOTAL_TIMESTEPS,
-        callback=callbacks,
-        progress_bar=True,
+        total_timesteps = TOTAL_TIMESTEPS,
+        callback        = callbacks,
+        progress_bar    = True,
     )
-    
+
     model.save(os.path.join(models_dir, "final_model"))
     env.save(os.path.join(models_dir, "vec_normalize.pkl"))
     training_logger._flush()
 
     print("\n" + "=" * 70)
-    print("✅ Eğitim tamamlandı!")
-    print(f"   Model: {models_dir}/final_model.zip")
-    print(f"   VecNorm: {models_dir}/vec_normalize.pkl")
-    print(f"   Logs:  {log_dir}/training_log.json")
-    print(f"   Metadata: {log_dir}/run_meta.json")
-    print(f"   Monitor: {log_dir}/monitor.csv")
-    print(f"   TensorBoard: tensorboard --logdir={log_dir}")
+    print("Egitim tamamlandi!")
+    print(f"  Model:    {models_dir}/final_model.zip")
+    print(f"  VecNorm:  {models_dir}/vec_normalize.pkl")
+    print(f"  Logs:     {log_dir}/training_log.json")
+    print(f"  TensorBoard: tensorboard --logdir={log_dir}")
     print("=" * 70)
 
     env.close()
-    rclpy.shutdown()
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

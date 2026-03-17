@@ -8,7 +8,7 @@ from dataclasses import dataclass
 WORLD_NAME = "default"
 WALL_HEIGHT = 7
 WALL_THICKNESS = 0.2
-CELL_SIZE = 5.0
+CELL_SIZE = 3.0
 Z_CENTER = WALL_HEIGHT / 2
 
 ROWS, COLS = 15, 15
@@ -16,7 +16,7 @@ random.seed(time.time_ns())
 
 # --- DÜZELTME 1: İNSAN SAYISI AYARI ---
 # Labirentteki hücrelerin %15'ine insan koy (Eskiden 0.03 idi)
-ACTOR_DENSITY = 1.0  
+ACTOR_DENSITY = 0.7  
 # Drone Spawn Merkezi
 DRONE_SPAWN_CELL = (ROWS // 2, COLS // 2)
 # İnsanların spawn noktasına yaklaşmaması gereken mesafe (hücre cinsinden)
