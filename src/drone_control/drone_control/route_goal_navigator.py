@@ -20,6 +20,7 @@ import heapq
 import random
 import json
 import os
+import threading
 
 # Curriculum maze sabitleri (maze_curriculum_world ile uyumlu)
 ROWS, COLS = 15, 15
@@ -74,7 +75,7 @@ def _stage_from_x(x):
     return 3
 
 
-ARRIVAL_DIST = 2.0
+ARRIVAL_DIST = 1.5
 GOAL_Z = 1.5
 DIRS_RC = {"N": (-1, 0), "S": (1, 0), "E": (0, 1), "W": (0, -1)}
 
@@ -111,12 +112,13 @@ def astar(walls, start, goal, rows, cols):
     def h(a, b):
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
-    heap = [(h(start, goal), 0, start)]
+    step = 0
+    heap = [(h(start, goal), step, 0, start)]
     came_from = {start: None}
     g = {start: 0}
 
     while heap:
-        _, cost, cur = heapq.heappop(heap)
+        _, _, cost, cur = heapq.heappop(heap)
         if cur == goal:
             path, node = [], goal
             while node is not None:
@@ -134,7 +136,8 @@ def astar(walls, start, goal, rows, cols):
             if nb not in g or ng < g[nb]:
                 g[nb] = ng
                 came_from[nb] = cur
-                heapq.heappush(heap, (ng + h(nb, goal), ng, nb))
+                step += 1
+                heapq.heappush(heap, (ng + h(nb, goal), step, ng, nb))
     return []
 
 
@@ -176,6 +179,7 @@ class RouteGoalNavigator(Node):
             Int32, "/route/set_stage", self._cb_set_stage, 10)
 
         self.pos = [0.0, 0.0, 0.0]
+        self._pos_lock = threading.Lock()
         self.odom_ok = False
         self.navigating = False
         self.goal_cell = None
@@ -183,6 +187,7 @@ class RouteGoalNavigator(Node):
 
         self.visited = set()
         self.visited.add(self._spawn_cell)
+        self._unvisited_cache = None
 
         self.get_logger().info(
             f"RouteGoalNavigator baslatildi | Unified={self.unified} | "
@@ -223,6 +228,7 @@ class RouteGoalNavigator(Node):
 
         self.visited.clear()
         self.visited.add(self._spawn_cell)
+        self._unvisited_cache = None
         self.navigating = False
         self.goal_cell = None
         self.current_path_cells = []
@@ -235,16 +241,19 @@ class RouteGoalNavigator(Node):
     # Odometry
     # ------------------------------------------------------------------ #
     def _cb_odom(self, msg: Odometry):
-        self.pos[0] = msg.pose.pose.position.x
-        self.pos[1] = msg.pose.pose.position.y
-        self.pos[2] = msg.pose.pose.position.z
+        with self._pos_lock:
+            self.pos[0] = msg.pose.pose.position.x
+            self.pos[1] = msg.pose.pose.position.y
+            self.pos[2] = msg.pose.pose.position.z
+            x, y = self.pos[0], self.pos[1]
         self.odom_ok = True
         if self.unified:
-            self.current_stage = _stage_from_x(self.pos[0])
-            cell = _world_to_cell_unified(self.pos[0], self.pos[1])
+            self.current_stage = _stage_from_x(x)
+            cell = _world_to_cell_unified(x, y)
         else:
-            cell = _world_to_cell(self.pos[0], self.pos[1], self._stage_origin)
+            cell = _world_to_cell(x, y, self._stage_origin)
         self.visited.add(cell)
+        self._unvisited_cache = None
 
     # ------------------------------------------------------------------ #
     # Main loop
@@ -253,27 +262,30 @@ class RouteGoalNavigator(Node):
         if not self.odom_ok:
             return
 
+        with self._pos_lock:
+            x, y = self.pos[0], self.pos[1]
         if self.unified:
-            curr_cell = _world_to_cell_unified(self.pos[0], self.pos[1])
+            curr_cell = _world_to_cell_unified(x, y)
         else:
-            curr_cell = _world_to_cell(self.pos[0], self.pos[1], self._stage_origin)
+            curr_cell = _world_to_cell(x, y, self._stage_origin)
 
-        if self.navigating and self.goal_cell:
+        goal_cell = self.goal_cell
+        if self.navigating and goal_cell:
             if self.unified:
-                gx, gy = _cell_to_world_unified(*self.goal_cell)
+                gx, gy = _cell_to_world_unified(*goal_cell)
             else:
-                gx, gy = _cell_to_world(*self.goal_cell, self._stage_origin)
-            dist = math.hypot(self.pos[0] - gx, self.pos[1] - gy)
+                gx, gy = _cell_to_world(*goal_cell, self._stage_origin)
+            dist = math.hypot(x - gx, y - gy)
             if dist < ARRIVAL_DIST:
                 self.get_logger().info(
-                    f"Hedefe ulasildi: {self.goal_cell} | "
+                    f"Hedefe ulasildi: {goal_cell} | "
                     f"Gezilen: {len(self.visited)}/{ROWS * COLS}"
                 )
-                self.visited.add(self.goal_cell)
+                self.visited.add(goal_cell)
+                self._unvisited_cache = None
                 self.navigating = False
                 self._pick_next_goal(curr_cell)
-
-        if not self.navigating:
+        elif not self.navigating:
             self._pick_next_goal(curr_cell)
 
         if self.current_path_cells:
@@ -291,15 +303,18 @@ class RouteGoalNavigator(Node):
             if goal is None:
                 self.visited.clear()
                 self.visited.add(curr_cell)
+                self._unvisited_cache = None
                 goal = self._nearest_unvisited(curr_cell)
 
         if goal is None:
             return
 
+        self._unvisited_cache = None
         path_cells = astar(self.walls, curr_cell, goal, self._rows, self._cols)
         if not path_cells:
             self.get_logger().warn(f"A* yol bulamadi: {curr_cell} -> {goal}")
             self.visited.add(goal)
+            self._unvisited_cache = None
             return
 
         self.current_path_cells = path_cells
@@ -324,9 +339,11 @@ class RouteGoalNavigator(Node):
         ]
 
     def _nearest_unvisited(self, curr_cell):
-        all_cells = {(r, c) for r in range(self._rows) for c in range(self._cols)}
+        if self._unvisited_cache is None:
+            all_cells = {(r, c) for r in range(self._rows) for c in range(self._cols)}
+            self._unvisited_cache = all_cells - self.visited
         unvisited = sorted(
-            all_cells - self.visited,
+            self._unvisited_cache,
             key=lambda nb: abs(nb[0] - curr_cell[0]) + abs(nb[1] - curr_cell[1]),
         )
         if not unvisited:

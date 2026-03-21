@@ -86,7 +86,7 @@ class Track:
 
 class ThreatEncoderNode(Node):
     def __init__(self):
-        super().__init__("threat_encoder_node")
+        super().__init__("threat_encoder_v2")
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)

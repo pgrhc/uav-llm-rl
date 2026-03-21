@@ -2,6 +2,9 @@
 """
 Custom feature extractor for Route Planning Agent  (Faz 1).
 
+Uses only deployable keys: costmap_patch, threat_vector, threat_scores, goal_state, a_star_path.
+Ignores 'privileged' if present in observations (for Actor; Critic adds it separately).
+
 Architecture:
     costmap_patch (1,64,64) → CNN  → map_embedding   (128)
     threat_vector (74,)      → MLP  → threat_embedding (64)
@@ -17,15 +20,22 @@ Architecture:
 import torch
 import torch.nn as nn
 from gymnasium import spaces
+from typing import Optional
+
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 
 class RouteCombinedExtractor(BaseFeaturesExtractor):
 
-    def __init__(self, observation_space: spaces.Dict):
-        super().__init__(observation_space, features_dim=272)
+    DEPLOY_DIM = 272
 
-        # CNN for costmap_patch (1, 64, 64)
+    def __init__(self, observation_space: spaces.Dict, features_dim: Optional[int] = None):
+        if features_dim is not None and features_dim <= 0:
+            raise ValueError("features_dim must be > 0")
+        fd = features_dim if features_dim is not None else self.DEPLOY_DIM
+        super().__init__(observation_space, features_dim=fd)
+
+        # CNN for costmap_patch (1, 64, 64) — output size computed dynamically
         self.cnn = nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=5, stride=2, padding=2),
             nn.ReLU(),
@@ -35,8 +45,11 @@ class RouteCombinedExtractor(BaseFeaturesExtractor):
             nn.ReLU(),
             nn.Flatten(),
         )
+        with torch.no_grad():
+            dummy = torch.zeros(1, *observation_space["costmap_patch"].shape)
+            conv_out = self.cnn(dummy).shape[1]
         self.cnn_fc = nn.Sequential(
-            nn.Linear(64 * 8 * 8, 128),
+            nn.Linear(conv_out, 128),
             nn.ReLU(),
         )
 
@@ -71,6 +84,7 @@ class RouteCombinedExtractor(BaseFeaturesExtractor):
         )
 
     def forward(self, observations: dict) -> torch.Tensor:
+        """Extract deployable features only. Ignores 'privileged' if present."""
         costmap = observations["costmap_patch"]
         threat = observations["threat_vector"]
         scores = observations["threat_scores"]

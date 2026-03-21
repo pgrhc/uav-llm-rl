@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
+"""
+PX4 offboard: /plan (A* path) veya taze /route/waypoint_desired (RL route) ile setpoint üretir.
 
+Tek node hem rota RL hem tehdit / diğer senaryolar tarafından kullanılabilir:
+- Tehdit vb.: genelde sadece /plan → publish_trajectory_setpoint içinde smoothing
+  self.SETPOINT_ALPHA / self.MAX_SETPOINT_STEP (ROS: alpha, max_speed) ile yapılır.
+- Route RL: /route/waypoint_desired gelince (ROUTE_WP_TIMEOUT içinde) doğrudan hedefe
+  gidilir; alpha/max_speed bu dala uygulanmaz — davranış route tarafından adım adım belirlenir.
+
+Parametre varsayılanları modül sabitleriyle aynı tutulur (tehdit tarafında sessiz regresyon olmasın).
+"""
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
@@ -59,13 +69,12 @@ class OffboardControl(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=10
         )
-        # __init__ içine ekle
-        self.declare_parameter('max_speed', 0.25)
-        self.declare_parameter('alpha', 0.15)
+        # Path-follow smoothing: defaults = module constants (threat / legacy ile aynı sayılar)
+        self.declare_parameter('max_speed', float(MAX_SETPOINT_STEP))
+        self.declare_parameter('alpha', float(SETPOINT_ALPHA))
 
-        # timer_callback içinde oku
-        self.MAX_SETPOINT_STEP = self.get_parameter('max_speed').value
-        self.SETPOINT_ALPHA    = self.get_parameter('alpha').value
+        self.MAX_SETPOINT_STEP = float(self.get_parameter('max_speed').value)
+        self.SETPOINT_ALPHA = float(self.get_parameter('alpha').value)
         self.offboard_control_mode_pub = self.create_publisher(
             OffboardControlMode, '/fmu/in/offboard_control_mode', qos_px4)
         self.trajectory_setpoint_pub = self.create_publisher(
@@ -82,7 +91,7 @@ class OffboardControl(Node):
         
         # EKLENEN: Vehicle status subscriber
         self.vehicle_status_sub = self.create_subscription(
-            VehicleStatus, '/fmu/out/vehicle_status', self.vehicle_status_callback, qos_px4)
+            VehicleStatus, '/fmu/out/vehicle_status_v1', self.vehicle_status_callback, qos_px4)
 
         self.offboard_setpoint_counter = 0
         self.current_path = []
@@ -114,7 +123,8 @@ class OffboardControl(Node):
         self.timer = self.create_timer(TIMER_PERIOD, self.timer_callback)
         self.get_logger().info(
             f"ADAPTİF MOD: Max={MAX_LOOKAHEAD}m, Min={MIN_LOOKAHEAD}m | "
-            f"Timer={TIMER_PERIOD}s | Alpha={SETPOINT_ALPHA} | MaxStep={MAX_SETPOINT_STEP}m"
+            f"Timer={TIMER_PERIOD}s | Alpha={self.SETPOINT_ALPHA} | "
+            f"MaxStep={self.MAX_SETPOINT_STEP}m (path-follow; route_wp uses direct setpoint)"
         )
 
     def vehicle_status_callback(self, msg):
@@ -360,6 +370,7 @@ class OffboardControl(Node):
     def publish_trajectory_setpoint(self):
         msg = TrajectorySetpoint()
 
+        # Route RL: doğrudan hedef (alpha/max_speed yok). Tehdit sadece /plan kullanıyorsa buraya girmez.
         if self._has_active_route_wp():
             target_enu = self.route_wp.position
             q = self.route_wp.orientation
@@ -406,14 +417,16 @@ class OffboardControl(Node):
             if self.sp_n is None:
                 self.sp_n, self.sp_e = raw_n, raw_e
             else:
-                self.sp_n = (1.0 - SETPOINT_ALPHA) * self.sp_n + SETPOINT_ALPHA * raw_n
-                self.sp_e = (1.0 - SETPOINT_ALPHA) * self.sp_e + SETPOINT_ALPHA * raw_e
+                alpha = self.SETPOINT_ALPHA
+                max_step = self.MAX_SETPOINT_STEP
+                self.sp_n = (1.0 - alpha) * self.sp_n + alpha * raw_n
+                self.sp_e = (1.0 - alpha) * self.sp_e + alpha * raw_e
 
                 dn = self.sp_n - curr_north
                 de = self.sp_e - curr_east
                 d = math.sqrt(dn * dn + de * de)
-                if d > MAX_SETPOINT_STEP and d > 1e-6:
-                    scale = MAX_SETPOINT_STEP / d
+                if d > max_step and d > 1e-6:
+                    scale = max_step / d
                     self.sp_n = curr_north + dn * scale
                     self.sp_e = curr_east + de * scale
 

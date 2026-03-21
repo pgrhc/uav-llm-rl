@@ -28,6 +28,12 @@ setup(
         'console_scripts': [
             "llm_node = uav_llm.llm_strategic_node:main",
             "state_summarizer_node = uav_llm.state_summarizer_node:main",
+            "llm_task_node = uav_llm.llm_task:main",
+            "llm_executor_node = uav_llm.llm_executor_node:main",
+            "llm_command_input_node = uav_llm.llm_command_input_node:main",
+            "llm_raw_task_node = uav_llm.llm_raw_task:main",
+            "plan_review_node = uav_llm.llm_plan_review:main",
+            "plan_execution_node = uav_llm.llm_plan_execution:main",
         ],
     },
 )

@@ -88,8 +88,8 @@ DIRS = {"N": (-1, 0), "E": (0, 1), "S": (1, 0), "W": (0, -1)}
 OPP = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
 
-def _in_bounds(r, c):
-    return 0 <= r < ROWS and 0 <= c < COLS
+def _in_bounds(r, c, rows=ROWS, cols=COLS):
+    return 0 <= r < rows and 0 <= c < cols
 
 
 def generate_maze(seed=None):
@@ -135,10 +135,6 @@ def open_spawn_area(walls, radius=1):
     return walls
 
 
-def _in_bounds_unified(r, c, rows, cols):
-    return 0 <= r < rows and 0 <= c < cols
-
-
 def generate_unified_maze(seed=101):
     """15x45 birlesik maze. Bolumler arasi duvarlar acik."""
     rng = random.Random(seed)
@@ -156,7 +152,7 @@ def generate_unified_maze(seed=101):
         neigh = [
             (d, r + dr, c + dc)
             for d, (dr, dc) in DIRS.items()
-            if _in_bounds_unified(r + dr, c + dc, rows, cols)
+            if _in_bounds(r + dr, c + dc, rows, cols)
             and not vis[r + dr][c + dc]
         ]
         if not neigh:
@@ -171,12 +167,14 @@ def generate_unified_maze(seed=101):
     walls[0][0]["N"] = False
     walls[rows - 1][cols - 1]["S"] = False
 
-    # Bolum 1-2 ve 2-3 arasi gecisleri ac (c=14/15 ve c=29/30)
+    # Bolum 1-2 ve 2-3 arasi gecisleri ac
+    b1 = UNIFIED_SECTION_COLS - 1
+    b2 = UNIFIED_SECTION_COLS * 2 - 1
     for r in range(rows):
-        walls[r][14]["E"] = False
-        walls[r][15]["W"] = False
-        walls[r][29]["E"] = False
-        walls[r][30]["W"] = False
+        walls[r][b1]["E"] = False
+        walls[r][b1 + 1]["W"] = False
+        walls[r][b2]["E"] = False
+        walls[r][b2 + 1]["W"] = False
 
     walls = open_spawn_area_unified(walls, UNIFIED_SPAWN_CELL, radius=1)
     return walls
@@ -189,7 +187,7 @@ def open_spawn_area_unified(walls, spawn_cell, radius=1):
         for c in range(max(0, sc - radius), min(cols, sc + radius + 1)):
             for d, (dr, dc) in DIRS.items():
                 nr, nc = r + dr, c + dc
-                if _in_bounds_unified(nr, nc, rows, cols):
+                if _in_bounds(nr, nc, rows, cols):
                     walls[r][c][d] = False
                     walls[nr][nc][OPP[d]] = False
     return walls
@@ -213,11 +211,20 @@ def cell_to_world(r, c, stage_origin):
     return x, y
 
 
-def world_to_cell(x, y, stage_origin):
+def world_to_cell(x, y, stage_origin, rows=ROWS, cols=COLS):
+    """World coords -> (r, c). Use rows/cols for unified maze (15x45)."""
     ox, oy = maze_origin(stage_origin)
     c = int((x - ox) / CELL_SIZE)
     r = int((y - oy) / CELL_SIZE)
-    return max(0, min(ROWS - 1, r)), max(0, min(COLS - 1, c))
+    return max(0, min(rows - 1, r)), max(0, min(cols - 1, c))
+
+
+def world_to_cell_unified(x, y):
+    """Unified maze: world coords -> (r, c)."""
+    ox, oy = maze_origin_unified()
+    c = int((x - ox) / CELL_SIZE)
+    r = int((y - oy) / CELL_SIZE)
+    return max(0, min(UNIFIED_ROWS - 1, r)), max(0, min(UNIFIED_COLS - 1, c))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -325,26 +332,39 @@ def spawn_sdf_model(model_name, sdf_string):
     path = f"/tmp/{model_name}.sdf"
     with open(path, "w") as f:
         f.write(sdf_string)
-    cmd = (
-        f'gz service -s /world/{WORLD_NAME}/create '
-        f'--reqtype gz.msgs.EntityFactory '
-        f'--reptype gz.msgs.Boolean '
-        f'--timeout 5000 '
-        f"--req 'sdf_filename: \"{path}\"'"
+    req_str = f'sdf_filename: "{path}"'
+    result = subprocess.run(
+        [
+            "gz", "service", "-s", f"/world/{WORLD_NAME}/create",
+            "--reqtype", "gz.msgs.EntityFactory",
+            "--reptype", "gz.msgs.Boolean",
+            "--timeout", "5000",
+            "--req", req_str,
+        ],
+        shell=False,
+        capture_output=True,
+        text=True,
     )
-    subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    print(f"Spawned: {model_name}")
+    if result.returncode != 0:
+        print(f"HATA: {model_name} spawn edilemedi: {result.stderr or result.stdout}")
+    else:
+        print(f"Spawned: {model_name}")
 
 
 def remove_entity(name, entity_type="MODEL"):
-    cmd = (
-        f'gz service -s /world/{WORLD_NAME}/remove '
-        f'--reqtype gz.msgs.Entity '
-        f'--reptype gz.msgs.Boolean '
-        f'--timeout 2000 '
-        f"--req 'name: \"{name}\" type: {entity_type}'"
+    req_str = f'name: "{name}" type: {entity_type}'
+    subprocess.run(
+        [
+            "gz", "service", "-s", f"/world/{WORLD_NAME}/remove",
+            "--reqtype", "gz.msgs.Entity",
+            "--reptype", "gz.msgs.Boolean",
+            "--timeout", "2000",
+            "--req", req_str,
+        ],
+        shell=False,
+        capture_output=True,
+        text=True,
     )
-    subprocess.run(cmd, shell=True, capture_output=True, text=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -390,9 +410,11 @@ def generate_obstacle_positions_unified(walls, ratio=0.25, seed=42):
 
     for r in range(rows):
         for c in range(cols):
-            if c < 15:  # Bolum 1'de engel yok
+            if c < UNIFIED_SECTION_COLS:  # Bolum 1'de engel yok
                 continue
-            if abs(r - 7) <= 2 and abs(c - 22) <= 2:  # Bolum 2 merkezinden kacin
+            # Bolum 2 merkezi: c = UNIFIED_SECTION_COLS + UNIFIED_SECTION_COLS//2
+            section2_center_c = UNIFIED_SECTION_COLS + UNIFIED_SECTION_COLS // 2
+            if abs(r - UNIFIED_SPAWN_CELL[0]) <= 2 and abs(c - section2_center_c) <= 2:
                 continue
             if rng.random() > ratio:
                 continue
@@ -470,29 +492,19 @@ def _collect_corridors_impl(walls, rows, cols, min_len=2):
 
 
 def collect_corridors_unified(walls, section=3):
-    """section=3: sadece bolum 3 (c>=30) koridorlari."""
+    """section=3: sadece bolum 3 (c >= UNIFIED_SECTION_COLS*2) koridorlari."""
     all_c = _collect_corridors_impl(walls, UNIFIED_ROWS, UNIFIED_COLS, min_len=2)
     if section == 3:
-        return [c for c in all_c if c[0][1] >= 30 and c[1][1] >= 30]
+        min_c = UNIFIED_SECTION_COLS * 2
+        return [c for c in all_c if c[0][1] >= min_c and c[1][1] >= min_c]
     return all_c
 
 
-def _corridor_near_spawn(corridor, radius):
+def _corridor_near_spawn(corridor, radius, spawn_cell=None):
     (r1, c1), (r2, c2), _ = corridor
-    sr, sc = DRONE_SPAWN_CELL
-    if (abs(r1 - sr) < radius and abs(c1 - sc) < radius) or \
-       (abs(r2 - sr) < radius and abs(c2 - sc) < radius):
-        return True
-    return False
-
-
-def _corridor_near_spawn_unified(corridor, radius):
-    (r1, c1), (r2, c2), _ = corridor
-    sr, sc = UNIFIED_SPAWN_CELL
-    if (abs(r1 - sr) < radius and abs(c1 - sc) < radius) or \
-       (abs(r2 - sr) < radius and abs(c2 - sc) < radius):
-        return True
-    return False
+    sr, sc = spawn_cell if spawn_cell is not None else DRONE_SPAWN_CELL
+    return (abs(r1 - sr) < radius and abs(c1 - sc) < radius) or \
+           (abs(r2 - sr) < radius and abs(c2 - sc) < radius)
 
 
 def corridor_to_world(corridor, stage_origin):
@@ -549,25 +561,13 @@ def build_actor_sdf(actor_name, skin_uri, anim_uri, x1, y1, x2, y2, is_horiz,
 """
 
 
-def spawn_stage3_actors(walls, stage_origin=None):
-    if stage_origin is None:
-        stage_origin = STAGE_ORIGINS[3]
-
+def _spawn_actors_from_corridors(safe_corridors, world_fn, area, name_prefix, rng_seed=303):
+    """Ortak actor spawn mantigi. world_fn(corridor) -> (x1,y1,x2,y2,is_horiz)."""
     if not os.path.exists(SKIN_PATH):
         print(f"Actor dosyalari bulunamadi: {SKIN_PATH}")
         return []
 
-    corridors = collect_corridors(walls, min_len=2)
-    safe_corridors = [
-        c for c in corridors if not _corridor_near_spawn(c, AVOID_SPAWN_RADIUS)
-    ]
-    if not safe_corridors:
-        print("Uygun koridor bulunamadi.")
-        return []
-
-    area = ROWS * COLS
     target_n = max(ACTOR_MIN, min(ACTOR_MAX, int(area * 0.9)))
-
     actor_slots = []
     for corr in safe_corridors:
         actor_slots.append(corr)
@@ -576,7 +576,7 @@ def spawn_stage3_actors(walls, stage_origin=None):
             for _ in range(corr_len // LONG_CORRIDOR_BONUS):
                 actor_slots.append(corr)
 
-    rng = random.Random(303)
+    rng = random.Random(rng_seed)
     while len(actor_slots) < target_n:
         actor_slots.append(rng.choice(safe_corridors))
     rng.shuffle(actor_slots)
@@ -584,82 +584,12 @@ def spawn_stage3_actors(walls, stage_origin=None):
 
     skin_uri = _file_uri(SKIN_PATH)
     anim_uri = _file_uri(ANIM_PATH)
-
     actor_data_list = []
 
     for idx, corr in enumerate(actor_slots):
-        x1, y1, x2, y2, is_horiz = corridor_to_world(corr, stage_origin)
-
-        # Her aktor farkli hizda: yavas (0.5) - hizli (2.0) m/s
+        x1, y1, x2, y2, is_horiz = world_fn(corr)
         speed = rng.uniform(ACTOR_SPEED_MIN, ACTOR_SPEED_MAX)
-        name = f"s3_human_{idx}_{rng.randint(100, 999)}"
-        sdf = build_actor_sdf(name, skin_uri, anim_uri, x1, y1, x2, y2,
-                              is_horiz, speed=speed)
-        spawn_sdf_model(name, sdf)
-
-        dx = x2 - x1
-        dy = y2 - y1
-        dist = math.sqrt(dx * dx + dy * dy)
-        duration = dist / speed
-        period = 2.0 * duration + 1.0
-
-        actor_data_list.append({
-            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-            "period": round(period, 3),
-            "speed": round(speed, 3),
-        })
-        if (idx + 1) % 20 == 0:
-            print(f"  Actors: {idx + 1}/{target_n}")
-
-    print(f"Stage 3: {len(actor_data_list)} aktor spawn edildi.")
-    return actor_data_list
-
-
-def spawn_stage3_actors_lazy():
-    """Training script tarafindan Stage 3 gecisinde cagrilir."""
-    walls = load_walls(WALLS_PATHS[3])
-    actor_data = spawn_stage3_actors(walls, STAGE_ORIGINS[3])
-    save_actor_data(actor_data, ACTORS_JSON_PATH)
-    return actor_data
-
-
-def spawn_unified_actors(walls):
-    """Birlesik maze: sadece bolum 3 (c>=30) koridorlarina aktor."""
-    if not os.path.exists(SKIN_PATH):
-        print(f"Actor dosyalari bulunamadi: {SKIN_PATH}")
-        return []
-
-    corridors = collect_corridors_unified(walls, section=3)
-    safe_corridors = corridors  # Bolum 3 zaten spawn'dan uzak
-    if not safe_corridors:
-        print("Bolum 3'te uygun koridor bulunamadi.")
-        return []
-
-    area = UNIFIED_SECTION_COLS * UNIFIED_ROWS
-    target_n = max(ACTOR_MIN, min(ACTOR_MAX, int(area * 0.9)))
-
-    actor_slots = []
-    for corr in safe_corridors:
-        actor_slots.append(corr)
-        corr_len = abs(corr[1][0] - corr[0][0]) + abs(corr[1][1] - corr[0][1]) + 1
-        if corr_len >= LONG_CORRIDOR_BONUS:
-            for _ in range(corr_len // LONG_CORRIDOR_BONUS):
-                actor_slots.append(corr)
-
-    rng = random.Random(303)
-    while len(actor_slots) < target_n:
-        actor_slots.append(rng.choice(safe_corridors))
-    rng.shuffle(actor_slots)
-    actor_slots = actor_slots[:target_n]
-
-    skin_uri = _file_uri(SKIN_PATH)
-    anim_uri = _file_uri(ANIM_PATH)
-
-    actor_data_list = []
-    for idx, corr in enumerate(actor_slots):
-        x1, y1, x2, y2, is_horiz = corridor_to_world_unified(corr)
-        speed = rng.uniform(ACTOR_SPEED_MIN, ACTOR_SPEED_MAX)
-        name = f"unified_human_{idx}_{rng.randint(100, 999)}"
+        name = f"{name_prefix}_{idx}_{rng.randint(100, 999)}"
         sdf = build_actor_sdf(name, skin_uri, anim_uri, x1, y1, x2, y2, is_horiz, speed=speed)
         spawn_sdf_model(name, sdf)
 
@@ -676,6 +606,51 @@ def spawn_unified_actors(walls):
         if (idx + 1) % 20 == 0:
             print(f"  Actors: {idx + 1}/{target_n}")
 
+    return actor_data_list
+
+
+def spawn_stage3_actors(walls, stage_origin=None):
+    if stage_origin is None:
+        stage_origin = STAGE_ORIGINS[3]
+
+    corridors = collect_corridors(walls, min_len=2)
+    safe_corridors = [
+        c for c in corridors if not _corridor_near_spawn(c, AVOID_SPAWN_RADIUS)
+    ]
+    if not safe_corridors:
+        print("Uygun koridor bulunamadi.")
+        return []
+
+    world_fn = lambda c: corridor_to_world(c, stage_origin)
+    actor_data_list = _spawn_actors_from_corridors(
+        safe_corridors, world_fn, ROWS * COLS, "s3_human"
+    )
+    print(f"Stage 3: {len(actor_data_list)} aktor spawn edildi.")
+    return actor_data_list
+
+
+def spawn_stage3_actors_lazy():
+    """Training script tarafindan Stage 3 gecisinde cagrilir."""
+    walls = load_walls(WALLS_PATHS[3])
+    actor_data = spawn_stage3_actors(walls, STAGE_ORIGINS[3])
+    save_actor_data(actor_data, ACTORS_JSON_PATH)
+    return actor_data
+
+
+def spawn_unified_actors(walls):
+    """Birlesik maze: sadece bolum 3 (c >= UNIFIED_SECTION_COLS*2) koridorlarina aktor."""
+    corridors = collect_corridors_unified(walls, section=3)
+    safe_corridors = corridors  # Bolum 3 zaten spawn'dan uzak
+    if not safe_corridors:
+        print("Bolum 3'te uygun koridor bulunamadi.")
+        return []
+
+    actor_data_list = _spawn_actors_from_corridors(
+        safe_corridors,
+        corridor_to_world_unified,
+        UNIFIED_SECTION_COLS * UNIFIED_ROWS,
+        "unified_human",
+    )
     print(f"Unified Bolum 3: {len(actor_data_list)} aktor spawn edildi.")
     return actor_data_list
 
@@ -697,7 +672,9 @@ def save_actor_data_unified(actor_list):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def save_walls(walls, path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    dirpath = os.path.dirname(path)
+    if dirpath:
+        os.makedirs(dirpath, exist_ok=True)
     with open(path, "w") as f:
         json.dump(walls, f)
     print(f"Walls kaydedildi: {path}")
