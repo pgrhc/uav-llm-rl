@@ -2,22 +2,39 @@
 """
 train_route_curriculum.py — 3-stage curriculum training for Route Agent
 
-Stages:
-    1  (0 - 150K)   Path following — open maze, no actors
-    2  (150K - 350K) Static obstacles — narrow corridors, dead-ends
-    3  (350K - 600K) Dynamic threats — 180-200 walking actors
+Stages (non-unified; varsayılan toplam 300K — env ile değişir):
+    1  (0 - 75K)    Path following — open maze, no actors
+    2  (75K - 175K) Static obstacles — narrow corridors, dead-ends
+    3  (175K - 300K) Dynamic threats — 180-200 walking actors
 
 Callbacks:
     CurriculumScheduler     Stage transition + lazy actor spawning
     RouteTrainingMonitor    Policy entropy, action std, value loss,
                             success/collision/timeout rates, episode length,
                             deterministic-vs-stochastic comparison,
-                            route quality metrics (path error, threat exposure)
+                            route quality metrics (path error, threat exposure),
+                            reward/mean_rw_* (episode means of env info components)
     TrajectoryRecorder      Per-episode position + entropy/std for heatmap
     ProgressReporter        ETA and FPS
 
 Usage:
     ros2 run uav_route_planner train_route_curriculum
+
+VecEnv:
+    Varsayılan SubprocVecEnv(spawn): ROS env ayrı süreçte (GIL ile SAC ayrılır).
+    Sorun çıkarsa: ROUTE_USE_DUMMY_VEC=1 ile eski tek-süreç DummyVecEnv.
+
+SAC başlangıç (kök neden — “drone ne yapacağını bilmiyor” hissi):
+    learning_starts (ROUTE_LEARNING_STARTS, varsayılan 5000) dolana kadar SB3 SAC rastgele
+    aksiyon toplar; politika henüz anlamlı değildir. Bu fazda waypoint’ler sarsılır.
+    İnce ayar: ROUTE_RANDOM_PHASE_ACTION_SCALE=0.25 — sadece bu fazda aksiyon ölçeği (env içinde).
+    train script SyncSB3TimestepCallback ile _sb3_num_timesteps yazar (Subproc uyumlu).
+
+Waypoint adımı:
+    ROUTE_STEP_SIZE (m, varsayılan 0.3) — RouteCurriculumEnv / RouteEnv xy residual ölçeği; 0.2 tipik yumuşatma.
+
+Torch iş parçacığı:
+    TORCH_NUM_THREADS (varsayılan 1) — ana süreçte CPU çekişmesini azaltmak için.
 """
 
 import os
@@ -45,7 +62,7 @@ import gymnasium as gym
 import rclpy
 
 from stable_baselines3 import SAC
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, CallbackList
 from stable_baselines3.common.monitor import Monitor
 
@@ -67,6 +84,56 @@ def spawn_stage3_actors_lazy():
         return []
 
 from std_msgs.msg import Int32
+
+
+class TimestepSyncWrapper(gym.Wrapper):
+    """Monitor dışında: VecEnv.env_method('set_sb3_timesteps', n) → RouteCurriculumEnv."""
+
+    def set_sb3_timesteps(self, n: int) -> None:
+        self.env.unwrapped.set_sb3_timesteps(int(n))
+
+    def reset(self, **kwargs):
+        return self.env.reset(**kwargs)
+
+    def step(self, action):
+        return self.env.step(action)
+
+
+class SyncSB3TimestepCallback(BaseCallback):
+    """Her adımda SB3 toplam timestep’i env’e iletir (random-phase ölçekleme için)."""
+
+    def _on_step(self) -> bool:
+        try:
+            self.training_env.env_method("set_sb3_timesteps", int(self.num_timesteps))
+        except Exception:
+            pass
+        return True
+
+
+def _route_curriculum_subproc_env_fn(log_dir: str, rank: int):
+    """
+    SubprocVecEnv (spawn) worker: ROS ayrı süreçte → GIL, SAC/PyTorch'tan ayrı.
+    Worker sürecinde Gym kaydı için mutlaka env paketi import edilmeli.
+    """
+    def _init():
+        import uav_route_planner.envs  # noqa: F401 — RouteCurriculumAgent-v0 register (spawn'ta şart)
+
+        os.makedirs(log_dir, exist_ok=True)
+        path = os.path.join(log_dir, f"monitor_{rank}.csv")
+        env = gym.make("RouteCurriculumAgent-v0")
+        env = Monitor(env, filename=path)
+        env = TimestepSyncWrapper(env)
+        return env
+
+    return _init
+
+
+def _vec_env_call_method(training_env, method_name: str, *args, indices=None):
+    """VecNormalize altındaki DummyVecEnv / SubprocVecEnv üzerinde metod çağrısı."""
+    venv = training_env.venv
+    idx = indices if indices is not None else [0]
+    return venv.env_method(method_name, *args, indices=idx)[0]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # GLOBALS FOR SIGNAL HANDLER (protected by lock to avoid race with training loop)
@@ -106,7 +173,12 @@ def _do_shutdown():
             print(f"Kayit hatasi: {e}")
         finally:
             if _env is not None:
-                _env.close()
+                try:
+                    _env.close()
+                except (EOFError, BrokenPipeError, OSError, ValueError):
+                    pass
+                except Exception:
+                    pass
             if rclpy.ok():
                 rclpy.shutdown()
             _model = _env = _save_dir = _trajectory_recorder = None
@@ -125,21 +197,29 @@ def _signal_handler(sig, frame):
 class CurriculumScheduler(BaseCallback):
     """Manages stage transitions and lazy actor spawning."""
 
-    STAGE_RANGES = {
-        1: (0, 150_000),
-        2: (150_000, 350_000),
-        3: (350_000, 600_000),
-    }
+    @staticmethod
+    def default_stage_ranges():
+        """ROUTE_TOTAL_TIMESTEPS, ROUTE_STAGE1_END, ROUTE_STAGE2_END ile yapılandırılır."""
+        t = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "300000"))
+        s1 = int(os.environ.get("ROUTE_STAGE1_END", "75000"))
+        s2 = int(os.environ.get("ROUTE_STAGE2_END", "175000"))
+        s1 = max(0, min(s1, t))
+        s2 = max(s1, min(s2, t))
+        return {1: (0, s1), 2: (s1, s2), 3: (s2, t)}
 
-    def __init__(self, verbose=1):
+    def __init__(self, verbose=1, stage_pub=None):
         super().__init__(verbose)
         self.current_stage = 1
-        self._stage_pub = None
+        self.stage_ranges = CurriculumScheduler.default_stage_ranges()
+        # Non-unified: ana süreçte /route/set_stage (Subproc'te child node'a erişilmez)
+        self._stage_pub = stage_pub
         self._actors_spawned = False
 
     def _on_training_start(self):
         if UNIFIED_MAZE:
             return  # Stage from position; no publisher needed
+        if self._stage_pub is not None:
+            return
         raw_env = self._get_raw_env()
         if raw_env and hasattr(raw_env, "node"):
             self._stage_pub = raw_env.node.create_publisher(
@@ -155,15 +235,16 @@ class CurriculumScheduler(BaseCallback):
         return True
 
     def _stage_for_timestep(self, ts):
-        for stage, (start, end) in self.STAGE_RANGES.items():
+        for stage, (start, end) in self.stage_ranges.items():
             if start <= ts < end:
                 return stage
         return 3
 
     def _transition(self, stage):
-        raw_env = self._get_raw_env()
-        if raw_env is not None:
-            raw_env.set_curriculum_stage(stage)
+        try:
+            _vec_env_call_method(self.training_env, "set_curriculum_stage", stage)
+        except Exception as e:
+            print(f"[CurriculumScheduler] set_curriculum_stage: {e}")
 
         if self._stage_pub is not None:
             msg = Int32()
@@ -193,6 +274,20 @@ class CurriculumScheduler(BaseCallback):
             return None
 
 
+# Per-step keys from route_curriculum_env info (episode means → TensorBoard reward/mean_*).
+_ROUTE_RW_INFO_KEYS = (
+    "rw_progress",
+    "rw_goal",
+    "rw_collision",
+    "rw_path",
+    "rw_astar_return",
+    "rw_path_drift",
+    "rw_threat",
+    "rw_smooth",
+    "rw_time",
+)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # BASE: Route Episode Metrics (shared by Monitor + PlotSaver)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -208,8 +303,14 @@ class _RouteEpisodeMetricsMixin:
         self.ep_rewards = deque(maxlen=window)
         self.ep_path_errors = deque(maxlen=window)
         self.ep_threat_maxes = deque(maxlen=window)
+        self.ep_threat_gate_means = deque(maxlen=window)
+        self.ep_astar_follow_rates = deque(maxlen=window)
+        self.ep_rw_means = {k: deque(maxlen=window) for k in _ROUTE_RW_INFO_KEYS}
         self._step_path_errors = []
         self._step_threat_maxes = []
+        self._step_threat_gates = []
+        self._step_on_astar = []
+        self._step_rw = {k: [] for k in _ROUTE_RW_INFO_KEYS}
 
     def _collect_episode_metrics(self):
         infos = self.locals.get("infos", [])
@@ -217,6 +318,10 @@ class _RouteEpisodeMetricsMixin:
         for i, info in enumerate(infos):
             self._step_path_errors.append(info.get("path_error", 0.0))
             self._step_threat_maxes.append(info.get("max_threat", 0.0))
+            self._step_threat_gates.append(float(info.get("threat_gate", 0.0)))
+            self._step_on_astar.append(float(info.get("on_astar", 0.0)))
+            for k in _ROUTE_RW_INFO_KEYS:
+                self._step_rw[k].append(float(info.get(k, 0.0)))
             if dones[i]:
                 self.ep_successes.append(1.0 if info.get("success") else 0.0)
                 self.ep_collisions.append(1.0 if info.get("collision") else 0.0)
@@ -229,8 +334,20 @@ class _RouteEpisodeMetricsMixin:
                     self.ep_path_errors.append(np.mean(self._step_path_errors))
                 if self._step_threat_maxes:
                     self.ep_threat_maxes.append(np.mean(self._step_threat_maxes))
+                if self._step_threat_gates:
+                    self.ep_threat_gate_means.append(np.mean(self._step_threat_gates))
+                if self._step_on_astar:
+                    self.ep_astar_follow_rates.append(np.mean(self._step_on_astar))
+                for k in _ROUTE_RW_INFO_KEYS:
+                    buf = self._step_rw[k]
+                    if buf:
+                        self.ep_rw_means[k].append(float(np.mean(buf)))
+                for k in _ROUTE_RW_INFO_KEYS:
+                    self._step_rw[k].clear()
                 self._step_path_errors.clear()
                 self._step_threat_maxes.clear()
+                self._step_threat_gates.clear()
+                self._step_on_astar.clear()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -311,6 +428,18 @@ class RouteTrainingMonitor(_RouteEpisodeMetricsMixin, BaseCallback):
         if len(self.ep_threat_maxes) > 0:
             self.logger.record("route/mean_threat_exposure",
                                np.mean(self.ep_threat_maxes))
+        if len(self.ep_threat_gate_means) > 0:
+            self.logger.record(
+                "route/mean_threat_gate", np.mean(self.ep_threat_gate_means)
+            )
+        if len(self.ep_astar_follow_rates) > 0:
+            self.logger.record(
+                "route/astar_follow_rate", np.mean(self.ep_astar_follow_rates)
+            )
+        for k in _ROUTE_RW_INFO_KEYS:
+            dq = self.ep_rw_means[k]
+            if len(dq) > 0:
+                self.logger.record(f"reward/mean_{k}", float(np.mean(dq)))
 
     def _log_det_vs_stoch(self):
         try:
@@ -348,11 +477,16 @@ class TrajectoryRecorder(BaseCallback):
         self._episode_count = 0
 
     def _on_step(self) -> bool:
-        raw_env = self._get_raw_env()
-        if raw_env is None:
+        try:
+            pos = _vec_env_call_method(self.training_env, "get_drone_position")
+        except Exception:
             return True
-
-        x, y, z = raw_env.get_drone_position()
+        if pos is None:
+            return True
+        arr = np.asarray(pos, dtype=np.float64).ravel()
+        if arr.size < 3:
+            return True
+        x, y, z = float(arr[0]), float(arr[1]), float(arr[2])
         self._current_positions.append([x, y, z])
 
         reward = self.locals.get("rewards", [0.0])
@@ -410,12 +544,6 @@ class TrajectoryRecorder(BaseCallback):
         except Exception as e:
             print(f"Trajectory kayit hatasi: {e}")
         self._episodes = []
-
-    def _get_raw_env(self):
-        try:
-            return self.training_env.venv.envs[0].unwrapped
-        except Exception:
-            return None
 
     def _on_training_end(self):
         self.flush()
@@ -567,7 +695,12 @@ class PlotSaverCallback(_RouteEpisodeMetricsMixin, BaseCallback):
             "timeout_rate": float(np.mean(self.ep_timeouts)) if self.ep_timeouts else 0.0,
             "path_error": float(np.mean(self.ep_path_errors)) if self.ep_path_errors else 0.0,
             "threat_exposure": float(np.mean(self.ep_threat_maxes)) if self.ep_threat_maxes else 0.0,
+            "mean_threat_gate": float(np.mean(self.ep_threat_gate_means)) if self.ep_threat_gate_means else 0.0,
+            "astar_follow_rate": float(np.mean(self.ep_astar_follow_rates)) if self.ep_astar_follow_rates else 0.0,
         }
+        for k in _ROUTE_RW_INFO_KEYS:
+            dq = self.ep_rw_means[k]
+            entry[f"mean_{k}"] = float(np.mean(dq)) if dq else 0.0
         self.history.append(entry)
 
     def _save_plots(self):
@@ -619,6 +752,7 @@ class PlotSaverCallback(_RouteEpisodeMetricsMixin, BaseCallback):
         ax = axes[1, 2]
         ax.plot(ts, [h["path_error"] for h in self.history], "b-", label="Path Error")
         ax.plot(ts, [h["threat_exposure"] for h in self.history], "r-", label="Threat")
+        ax.plot(ts, [h.get("astar_follow_rate", 0.0) for h in self.history], "g--", label="A* follow")
         ax.set_title("Route Quality")
         ax.legend()
         ax.grid(True, alpha=0.3)
@@ -629,6 +763,26 @@ class PlotSaverCallback(_RouteEpisodeMetricsMixin, BaseCallback):
         plt.close()
         if self.verbose:
             print(f"Grafikler kaydedildi: {path}")
+
+        # Episode ortalaması ödül bileşenleri (env info rw_* → rolling window)
+        fig_rw, axes_rw = plt.subplots(3, 3, figsize=(12, 10))
+        fig_rw.suptitle(
+            f"Reward components (mean per episode, window) — {self.num_timesteps:,} steps",
+            fontsize=11,
+        )
+        for ax, k in zip(axes_rw.flat, _ROUTE_RW_INFO_KEYS):
+            key = f"mean_{k}"
+            ax.plot(ts, [h.get(key, 0.0) for h in self.history], linewidth=1.0)
+            ax.set_title(k, fontsize=9)
+            ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        path_rw = os.path.join(
+            self.save_dir, f"training_reward_rw_{self.num_timesteps}.png"
+        )
+        plt.savefig(path_rw, dpi=150, bbox_inches="tight")
+        plt.close(fig_rw)
+        if self.verbose:
+            print(f"Ödül bileşen grafikleri: {path_rw}")
 
     def _on_training_end(self):
         if HAS_MATPLOTLIB and self.history:
@@ -641,7 +795,7 @@ class PlotSaverCallback(_RouteEpisodeMetricsMixin, BaseCallback):
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
-TOTAL_TIMESTEPS = 600_000
+TOTAL_TIMESTEPS = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "300000"))
 
 
 def main(args=None):
@@ -660,11 +814,18 @@ def main(args=None):
     signal.signal(signal.SIGINT, _signal_handler)
     atexit.register(_do_shutdown)
 
+    try:
+        import torch
+
+        torch.set_num_threads(int(os.environ.get("TORCH_NUM_THREADS", "1")))
+    except ImportError:
+        pass
+
     run_name = f"RouteCurriculum_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    models_dir = os.path.join("models", run_name)
-    log_dir = os.path.join("logs", run_name)
-    traj_dir = os.path.join(log_dir, "trajectories")
-    plots_dir = os.path.join(log_dir, "plots")
+    models_dir = os.path.abspath(os.path.join("models", run_name))
+    log_dir = os.path.abspath(os.path.join("logs", run_name))
+    traj_dir = os.path.abspath(os.path.join(log_dir, "trajectories"))
+    plots_dir = os.path.abspath(os.path.join(log_dir, "plots"))
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(traj_dir, exist_ok=True)
@@ -681,18 +842,46 @@ def main(args=None):
     if UNIFIED_MAZE:
         print(f"Mode:    BIRLESIK MAZE (pozisyon bazli stage, teleport yok)", flush=True)
     else:
-        print(f"Stages:  1 (0-150K) | 2 (150K-350K) | 3 (350K-600K)", flush=True)
+        sr = CurriculumScheduler.default_stage_ranges()
+        print(
+            f"Stages:  1 {sr[1]} | 2 {sr[2]} | 3 {sr[3]} (env: ROUTE_STAGE*_END)",
+            flush=True,
+        )
     if not HAS_MATPLOTLIB:
         print("Not:    Grafik kaydi icin: pip install matplotlib", flush=True)
+    use_dummy_vec = os.environ.get("ROUTE_USE_DUMMY_VEC", "").lower() in ("1", "true", "yes")
+    if use_dummy_vec:
+        print(
+            "VecEnv:  DummyVecEnv (ROUTE_USE_DUMMY_VEC) — ROS+SAC ayni proses; GIL riski",
+            flush=True,
+        )
+    else:
+        print(
+            "VecEnv:  SubprocVecEnv(spawn) — env ayri proses; GIL'den kurtulma",
+            flush=True,
+        )
     print("=" * 60, flush=True)
+
+    scheduler_node = None
+    stage_pub = None
+    if not UNIFIED_MAZE:
+        scheduler_node = rclpy.create_node("train_route_curriculum_scheduler")
+        stage_pub = scheduler_node.create_publisher(Int32, "/route/set_stage", 10)
 
     # --- Environment ---
     def make_env():
         env = gym.make("RouteCurriculumAgent-v0")
         env = Monitor(env, filename=os.path.join(log_dir, "monitor.csv"))
+        env = TimestepSyncWrapper(env)
         return env
 
-    vec_env = DummyVecEnv([make_env])
+    if use_dummy_vec:
+        vec_env = DummyVecEnv([make_env])
+    else:
+        vec_env = SubprocVecEnv(
+            [_route_curriculum_subproc_env_fn(log_dir, 0)],
+            start_method="spawn",
+        )
     env = VecNormalize(
         vec_env,
         norm_obs=True,
@@ -706,6 +895,9 @@ def main(args=None):
     # --- Model (SAC + Asymmetric Policy) ---
     from uav_route_planner.networks.route_asymmetric_policy import RouteAsymmetricSACPolicy
 
+    _ls = int(os.environ.get("ROUTE_LEARNING_STARTS", "5000"))
+    _rscale = float(os.environ.get("ROUTE_RANDOM_PHASE_ACTION_SCALE", "1.0"))
+
     model = SAC(
         RouteAsymmetricSACPolicy,
         env,
@@ -713,7 +905,7 @@ def main(args=None):
         tensorboard_log=log_dir,
         learning_rate=3e-4,
         buffer_size=100_000,
-        learning_starts=10_000,
+        learning_starts=_ls,
         batch_size=256,
         tau=0.005,
         gamma=0.99,
@@ -727,7 +919,7 @@ def main(args=None):
     _model = model
 
     # --- Callbacks ---
-    curriculum_scheduler = CurriculumScheduler(verbose=1)
+    curriculum_scheduler = CurriculumScheduler(verbose=1, stage_pub=stage_pub)
 
     route_monitor = RouteTrainingMonitor(
         log_freq=2048, compare_freq=10_000, window=100,
@@ -763,7 +955,10 @@ def main(args=None):
         verbose=1,
     )
 
+    timestep_sync_cb = SyncSB3TimestepCallback()
+
     callbacks = CallbackList([
+        timestep_sync_cb,
         curriculum_scheduler,
         route_monitor,
         trajectory_recorder,
@@ -774,8 +969,38 @@ def main(args=None):
     ])
 
     # --- Train ---
+    print("", flush=True)
+    print("!" * 60, flush=True)
+    print("SAC BASLANGIC NOTU (kok neden analizi)", flush=True)
     print(
-        "\nEgitim basliyor... (SAC learning_starts=10_000: once rastgele aksiyon; drone 'deli' gorunebilir)\n",
+        f"  learning_starts={_ls}  →  bu adim sayisina KADAR politika EGITILMEZ; "
+        "SB3 rastgele aksiyon toplar.",
+        flush=True,
+    )
+    print(
+        "  Bu yuzden ilk binlerce adimda waypoint'ler 'anlamsiz' gorunebilir; "
+        "drone da PX4/EKF gecikmesiyle sarsilir.",
+        flush=True,
+    )
+    if _rscale < 1.0 - 1e-9:
+        print(
+            f"  ROUTE_RANDOM_PHASE_ACTION_SCALE={_rscale}  →  random fazda "
+            "env aksiyonu bu faktorle kucultulur (daha yumusak waypoint).",
+            flush=True,
+        )
+    else:
+        print(
+            "  Random fazda yumusatma icin: export ROUTE_RANDOM_PHASE_ACTION_SCALE=0.25",
+            flush=True,
+        )
+    _step_m = float(os.environ.get("ROUTE_STEP_SIZE", "0.3"))
+    print(
+        f"  ROUTE_STEP_SIZE={_step_m} m  (xy residual; yumusak: 0.2, varsayilan 0.3)",
+        flush=True,
+    )
+    print("!" * 60, flush=True)
+    print(
+        "\nEgitim basliyor... (ROUTE_LEARNING_STARTS / ROUTE_RANDOM_PHASE_ACTION_SCALE / ROUTE_STEP_SIZE)\n",
         flush=True,
     )
 
@@ -807,6 +1032,11 @@ def main(args=None):
 
     atexit.unregister(_do_shutdown)
     env.close()
+    if scheduler_node is not None:
+        try:
+            scheduler_node.destroy_node()
+        except Exception:
+            pass
     if rclpy.ok():
         rclpy.shutdown()
 

@@ -37,5 +37,47 @@ def generate_launch_description():
                 {'use_sim_time': True}
             ]
         ),
+        Node(
+            package='uav_llm',
+            executable='llm_raw_task_node',
+            name='llm_raw_task_node',
+            output='screen',
+            emulate_tty=True,
+            parameters=[
+                {'use_sim_time': True}
+            ]
+        ),
+        # Node(
+        #     package='uav_llm',
+        #     executable='plan_review_node',
+        #     name='plan_review_node',
+        #     output='screen',
+        #     emulate_tty=True,
+        #     prefix='gnome-terminal -- ',
+        #     parameters=[
+        #         {'use_sim_time': True}
+        #     ]
+        # ),
+        Node(
+            package='uav_llm',
+            executable='plan_execution_node',
+            name='plan_execution_node',
+            output='screen',
+            emulate_tty=True,
+            parameters=[
+                {'use_sim_time': True}
+            ]
+        ),
+        Node(
+            package='uav_llm',
+            executable='llm_executor_node',
+            name='llm_executor_node',
+            output='screen',
+            emulate_tty=True,
+            parameters=[
+                {'use_sim_time': True}
+            ]
+        ),
+
        
     ])

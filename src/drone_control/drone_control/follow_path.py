@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-PX4 offboard: /plan (A* path) veya taze /route/waypoint_desired (RL route) ile setpoint üretir.
+PX4 offboard: /plan (A* path) veya taze route waypoint (varsayılan /route/waypoint_desired) ile setpoint üretir.
+
+Güvenlik filtresi zinciri: policy → /route/waypoint_desired → route_safety_filter → /route/waypoint_safe.
+PX4'i filtreden sonra beslemek için parametre: route_waypoint_topic:=/route/waypoint_safe
 
 Tek node hem rota RL hem tehdit / diğer senaryolar tarafından kullanılabilir:
 - Tehdit vb.: genelde sadece /plan → publish_trajectory_setpoint içinde smoothing
@@ -72,9 +75,13 @@ class OffboardControl(Node):
         # Path-follow smoothing: defaults = module constants (threat / legacy ile aynı sayılar)
         self.declare_parameter('max_speed', float(MAX_SETPOINT_STEP))
         self.declare_parameter('alpha', float(SETPOINT_ALPHA))
+        self.declare_parameter('route_waypoint_topic', '/route/waypoint_desired')
 
         self.MAX_SETPOINT_STEP = float(self.get_parameter('max_speed').value)
         self.SETPOINT_ALPHA = float(self.get_parameter('alpha').value)
+        route_wp_topic = str(self.get_parameter('route_waypoint_topic').value).strip()
+        if route_wp_topic and not route_wp_topic.startswith('/'):
+            route_wp_topic = '/' + route_wp_topic
         self.offboard_control_mode_pub = self.create_publisher(
             OffboardControlMode, '/fmu/in/offboard_control_mode', qos_px4)
         self.trajectory_setpoint_pub = self.create_publisher(
@@ -87,11 +94,11 @@ class OffboardControl(Node):
         self.path_sub = self.create_subscription(
             Path, '/plan', self.path_callback, qos_standard)
         self.route_wp_sub = self.create_subscription(
-            PoseStamped, '/route/waypoint_desired', self.route_wp_callback, 10)
+            PoseStamped, route_wp_topic, self.route_wp_callback, 10)
         
         # EKLENEN: Vehicle status subscriber
         self.vehicle_status_sub = self.create_subscription(
-            VehicleStatus, '/fmu/out/vehicle_status_v1', self.vehicle_status_callback, qos_px4)
+            VehicleStatus, '/fmu/out/vehicle_status', self.vehicle_status_callback, qos_px4)
 
         self.offboard_setpoint_counter = 0
         self.current_path = []
@@ -124,7 +131,8 @@ class OffboardControl(Node):
         self.get_logger().info(
             f"ADAPTİF MOD: Max={MAX_LOOKAHEAD}m, Min={MIN_LOOKAHEAD}m | "
             f"Timer={TIMER_PERIOD}s | Alpha={self.SETPOINT_ALPHA} | "
-            f"MaxStep={self.MAX_SETPOINT_STEP}m (path-follow; route_wp uses direct setpoint)"
+            f"MaxStep={self.MAX_SETPOINT_STEP}m (path-follow; route_wp uses direct setpoint) | "
+            f"route_wp={route_wp_topic}"
         )
 
     def vehicle_status_callback(self, msg):

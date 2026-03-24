@@ -3,14 +3,14 @@
 Route Planning Agent — Gazebo-based Gymnasium Environment  (Faz 1)
 
 Observation:
-    costmap_patch  : (1, 64, 64)  — CNN input   /route/costmap_patch
+    costmap_patch  : (1, 64, 64)  — CNN /route/costmap_patch (costmap_patch_node: varsayılan harita eksenli)
     threat_vector  : (74,)        — MLP input   /threat/state_vec
     threat_scores  : (5,)         — MLP input   /threat/target_scores
     goal_state     : (7,)         — MLP input   (rel_goal, dist, speed, yaw)
     a_star_path    : (10,)        — MLP input   /plan  (5 wp × rel_x,rel_y)
 
 Action:
-    Box(4,) → (dx, dy, dz, dyaw)  scaled to physical limits
+    Box(4,) → (dx, dy, dz, dyaw)  scaled to physical limits (ROUTE_STEP_SIZE, varsayılan 0.3 m)
 
 Reward  (Faz 1 — Çekirdek):
     r_progress   +2.0 × (prev_dist − curr_dist)
@@ -19,6 +19,8 @@ Reward  (Faz 1 — Çekirdek):
     r_time       −0.1
     r_smooth     −0.3 × ‖Δaction‖
 """
+
+import os
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -42,7 +44,7 @@ import cv2
 class RouteEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    STEP_SIZE = 0.3
+    STEP_SIZE = float(os.environ.get("ROUTE_STEP_SIZE", "0.3"))
     Z_STEP = 0.2
     MAX_YAW_RATE = 0.52
     GOAL_TOLERANCE = 0.5
@@ -135,6 +137,11 @@ class RouteEnv(gym.Env):
             durability=DurabilityPolicy.VOLATILE,
             depth=10,
         )
+        qos_costmap = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            depth=10,
+        )
 
         self.node.create_subscription(
             Image, "/route/costmap_patch", self._cb_patch, 10
@@ -153,7 +160,7 @@ class RouteEnv(gym.Env):
         )
         self.node.create_subscription(
             OccupancyGrid, "/local_costmap/costmap",
-            self._cb_costmap, qos_reliable
+            self._cb_costmap, qos_costmap
         )
         self.node.create_subscription(
             Path, "/plan", self._cb_plan, qos_sensor
@@ -322,8 +329,12 @@ class RouteEnv(gym.Env):
         return math.sqrt(dx * dx + dy * dy)
 
     def _check_collision(self, wp_x: float, wp_y: float) -> bool:
-        """Costmap lethal cell OR LiDAR proximity < 0.4 m."""
-        if self._check_costmap_collision(wp_x, wp_y):
+        """Costmap lethal (waypoint veya drone) VEYA LiDAR < 0.4 m."""
+        with self.cond:
+            dx, dy = self.drone_x, self.drone_y
+        if self._check_costmap_collision(wp_x, wp_y) or self._check_costmap_collision(
+            dx, dy
+        ):
             return True
         if self._check_lidar_collision():
             return True

@@ -54,12 +54,39 @@ class PlanReviewUINode(Node):
             self.get_logger().error(f"Failed to parse /llm/parsed_plan JSON: {e}")
             return
 
+        is_safe, reason = self.deterministic_safety_check(plan)
+        if not is_safe:
+            self.get_logger().warn(f"Plan auto-rejected by safety gate: {reason}")
+            if "safety_notes" not in plan:
+                plan["safety_notes"] = []
+            plan["safety_notes"].append(f"AUTO-REJECTED: {reason}")
+            self.publish_rejected(plan)
+            return
+
         self._review_in_progress = True
         threading.Thread(
             target=self.review_plan_interactively,
             args=(plan,),
             daemon=True
         ).start()
+
+    def deterministic_safety_check(self, plan: Dict[str, Any]) -> tuple[bool, str]:
+        steps = plan.get("steps", [])
+        for step in steps:
+            action = step.get("action", "")
+            
+            if action == "takeoff_to_altitude":
+                alt = step.get("target_altitude", 0.0)
+                if alt is not None and alt > 15.0:
+                    return False, f"Target altitude {alt}m exceeds maximum allowed (15m)."
+            
+            if step.get("speed", 1.0) > 5.0:
+                return False, f"Speed {step.get('speed')}m/s exceeds maximum allowed speed (5m/s)."
+                
+            if abs(step.get("delta_x", 0.0)) > 50.0 or abs(step.get("delta_y", 0.0)) > 50.0 or abs(step.get("delta_z", 0.0)) > 50.0:
+                return False, "Move distance exceeds maximum allowed per step (50m)."
+                
+        return True, ""
 
     def review_plan_interactively(self, plan: Dict[str, Any]):
         with self._prompt_lock:
@@ -128,13 +155,25 @@ class PlanReviewUINode(Node):
         print("=" * 72)
 
     def ask_decision(self) -> str:
+        import sys
         while rclpy.ok():
-            user_input = input("Approve or Reject? [a/r]: ").strip().lower()
+            print("Approve or Reject? [a/r]: ", end="", flush=True)
+            try:
+                user_input = sys.stdin.readline()
+                if not user_input:
+                    # EOF hit, meaning stdin might not be forwarded by ros2 launch
+                    self.get_logger().error("EOF on stdin. When running via launch file, stdin may not be attached nicely. Auto-rejecting.")
+                    return "r"
+                user_input = user_input.strip().lower()
+            except Exception as e:
+                self.get_logger().error(f"Input error: {e}")
+                return "r"
+                
             if user_input in ["a", "approve"]:
                 return "a"
             if user_input in ["r", "reject"]:
                 return "r"
-            print("Please enter 'a' to approve or 'r' to reject.")
+            print("Please enter 'a' to approve or 'r' to reject.", flush=True)
 
         return "r"
 

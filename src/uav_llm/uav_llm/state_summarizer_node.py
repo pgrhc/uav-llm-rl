@@ -12,6 +12,7 @@ from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String, Float32MultiArray
 from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import String, Float32MultiArray
+from px4_msgs.msg import VehicleStatus
 
 # --- VISION MESAJLARI (YOLO) ---
 from vision_msgs.msg import Detection2DArray
@@ -70,6 +71,13 @@ class StateSummarizerNode(Node):
                 "path_progress_ratio": 0.0,
                 "route_deviation": None,
                 "planner_status": "idle"
+            },
+            "vehicle": {
+                "arming_state": 0,
+                "nav_state": 0,
+                "failsafe": False,
+                "pre_flight_checks_pass": False,
+                "gcs_connection_lost": False
             }
         }
 
@@ -111,11 +119,24 @@ class StateSummarizerNode(Node):
             qos_rel
         )
 
+        self.create_subscription(
+            VehicleStatus,
+            '/fmu/out/vehicle_status_v1',
+            self.vehicle_status_callback,
+            qos_be
+        )
+
         self.summary_pub = self.create_publisher(String, '/llm/system_summary', 10)
-        self.timer = self.create_timer(1.0, self.publish_summary)
+        self.timer = self.create_timer(0.4, self.publish_summary)
 
         self.get_logger().info("✅ State Summarizer Başlatıldı")
 
+    def vehicle_status_callback(self, msg: VehicleStatus):
+        self.state["vehicle"]["arming_state"] = msg.arming_state
+        self.state["vehicle"]["nav_state"] = msg.nav_state
+        self.state["vehicle"]["failsafe"] = bool(msg.failsafe)
+        self.state["vehicle"]["pre_flight_checks_pass"] = bool(msg.pre_flight_checks_pass)
+        self.state["vehicle"]["gcs_connection_lost"] = bool(msg.gcs_connection_lost)
 
     def state_vec_callback(self, msg: Float32MultiArray):
         try:
@@ -402,15 +423,12 @@ class StateSummarizerNode(Node):
         route_dev = self.compute_route_deviation()
         mission["route_deviation"] = route_dev
 
-        # Mission progress
         if self.initial_goal_distance is not None and self.initial_goal_distance > 1e-6:
             progress = 1.0 - (dist_final / self.initial_goal_distance)
             progress = max(0.0, min(1.0, progress))
             mission["mission_progress"] = round(progress, 3)
         else:
             mission["mission_progress"] = 0.0
-
-        # Path progress ratio
         if len(self.current_path) > 1:
             path_progress_ratio = next_idx / (len(self.current_path) - 1)
             mission["path_progress_ratio"] = round(path_progress_ratio, 3)

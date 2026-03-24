@@ -112,6 +112,10 @@ class LLMExecutorNode(Node):
             self._cb_command, 10,
         )
 
+        self.pub_feedback = self.create_publisher(
+            String, "/llm/execution_feedback", 10
+        )
+
         self.current_x:   Optional[float] = None
         self.current_y:   Optional[float] = None
         self.current_z:   Optional[float] = None
@@ -140,6 +144,15 @@ class LLMExecutorNode(Node):
             f"LLMExecutorNode hazır | prefix='{self.topic_prefix or '/'}' | "
             "Bağlantı bekleniyor, otomatik arm YOK."
         )
+
+    def _publish_feedback(self, status: str, action: str, reason: str = ""):
+        msg = String()
+        msg.data = json.dumps({
+            "status": status,
+            "action": action,
+            "reason": reason
+        }, ensure_ascii=False)
+        self.pub_feedback.publish(msg)
 
     def _now_us(self) -> int:
         return int(self.get_clock().now().nanoseconds / 1000)
@@ -272,6 +285,8 @@ class LLMExecutorNode(Node):
             self.get_logger().warning(
                 f"Offboard moddan çıkıldı! nav_state={msg.nav_state}"
             )
+            action = self.active_cmd.get("action", "unknown") if self.active_cmd else "unknown"
+            self._publish_feedback("failure", action, "Loss of offboard mode")
 
         was_armed = self.is_armed
         self.is_armed = (msg.arming_state == VehicleStatus.ARMING_STATE_ARMED)
@@ -424,6 +439,7 @@ class LLMExecutorNode(Node):
         if self.active_cmd is not None and self._has_arrived():
             action = self.active_cmd.get("action", "")
             self.get_logger().info(f"Hedefe ulaşıldı: {action}")
+            self._publish_feedback("success", action, "Reached target")
             if action == "return_home":
                 self.get_logger().info("Home'a ulaşıldı → Land.")
                 self._send_land()

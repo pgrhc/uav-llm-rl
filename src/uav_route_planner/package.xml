@@ -7,6 +7,11 @@
   <maintainer email="samwnchstrgl@gmail.com">ubuntu</maintainer>
   <license>MIT</license>
 
+  <!-- Launch (deploy stack) -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>drone_control</exec_depend>
+
   <!-- Core ROS2 -->
   <depend>rclpy</depend>
   <depend>std_msgs</depend>

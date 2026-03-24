@@ -1,0 +1,648 @@
+================================================================================
+ROUTE PIPELINE HEALTH CHECK
+Tarih (UTC yerel): 2026-03-23T13:56:21+00:00
+Hostname: ros-desktop
+ROS_DISTRO: humble
+ROS_DOMAIN_ID: <varsayılan>
+Log dosyası: /home/ubuntu/Desktop/ros2_env/uav_ws/logs/route_pipeline_health_20260323_135620.txt
+Hz örnekleme süresi: 12s (topic başına)
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ A — Sim + köprü
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+>>> HZ ~12s: /clock
+average rate: 106.110
+	min: 0.004s max: 0.032s std dev: 0.00729s window: 20
+average rate: 84.433
+	min: 0.006s max: 0.043s std dev: 0.00765s window: 20
+average rate: 79.912
+	min: 0.003s max: 0.038s std dev: 0.00737s window: 20
+average rate: 81.671
+	min: 0.003s max: 0.048s std dev: 0.01108s window: 20
+average rate: 105.558
+	min: 0.005s max: 0.025s std dev: 0.00523s window: 20
+average rate: 95.033
+	min: 0.004s max: 0.040s std dev: 0.00815s window: 20
+average rate: 96.070
+	min: 0.005s max: 0.034s std dev: 0.00617s window: 20
+(hz: timeout, topic yok veya hz desteklenmiyor — son exit: 124)
+
+>>> HZ ~12s: /odometry/filtered
+average rate: 9.423
+	min: 0.000s max: 0.159s std dev: 0.05414s window: 10
+average rate: 8.465
+	min: 0.000s max: 0.159s std dev: 0.04322s window: 18
+average rate: 7.511
+	min: 0.113s max: 0.156s std dev: 0.01192s window: 20
+average rate: 7.763
+	min: 0.112s max: 0.156s std dev: 0.01228s window: 20
+average rate: 7.971
+	min: 0.106s max: 0.152s std dev: 0.01218s window: 20
+average rate: 8.072
+	min: 0.102s max: 0.147s std dev: 0.01281s window: 20
+average rate: 7.589
+	min: 0.102s max: 0.193s std dev: 0.01998s window: 20
+(hz: timeout, topic yok veya hz desteklenmiyor — son exit: 124)
+
+>>> HZ ~12s: /fmu/out/vehicle_odometry
+average rate: 34.871
+	min: 0.016s max: 0.062s std dev: 0.01397s window: 20
+average rate: 30.283
+	min: 0.010s max: 0.073s std dev: 0.01566s window: 20
+average rate: 38.163
+	min: 0.016s max: 0.056s std dev: 0.00918s window: 20
+average rate: 42.933
+	min: 0.011s max: 0.039s std dev: 0.00647s window: 20
+average rate: 34.210
+	min: 0.015s max: 0.073s std dev: 0.01425s window: 20
+average rate: 36.311
+	min: 0.017s max: 0.060s std dev: 0.01310s window: 20
+average rate: 40.624
+	min: 0.012s max: 0.060s std dev: 0.01224s window: 20
+average rate: 42.029
+	min: 0.015s max: 0.058s std dev: 0.00978s window: 20
+average rate: 37.282
+	min: 0.008s max: 0.072s std dev: 0.01603s window: 20
+(hz: timeout, topic yok veya hz desteklenmiyor — son exit: 124)
+
+>>> ros2 topic info -v /odometry/filtered
+Type: nav_msgs/msg/Odometry
+
+Publisher count: 1
+
+Node name: ekf_filter_node
+Node namespace: /
+Topic type: nav_msgs/msg/Odometry
+Endpoint type: PUBLISHER
+GID: 01.0f.4a.cf.1e.ff.1c.22.00.00.00.00.00.00.23.03.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): UNKNOWN
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Subscription count: 7
+
+Node name: costmap_patch_node
+Node namespace: /
+Topic type: nav_msgs/msg/Odometry
+Endpoint type: SUBSCRIPTION
+GID: 01.0f.4a.cf.0a.08.2a.9a.00.00.00.00.00.00.12.04.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: BEST_EFFORT
+  History (Depth): UNKNOWN
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Node name: offboard_control
+Node namespace: /
+Topic type: nav_msgs/msg/Odometry
+Endpoint type: SUBSCRIPTION
+GID: 01.0f.4a.cf.12.0b.3a.66.00.00.00.00.00.00.14.04.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: BEST_EFFORT
+  History (Depth): UNKNOWN
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Node name: sensor_fusion_sync
+Node namespace: /
+Topic type: nav_msgs/msg/Odometry
+Endpoint type: SUBSCRIPTION
+GID: 01.0f.4a.cf.2a.ff.9f.aa.00.00.00.00.00.00.15.04.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): UNKNOWN
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Node name: threat_encoder_v2
+Node namespace: /
+Topic type: nav_msgs/msg/Odometry
+Endpoint type: SUBSCRIPTION
+GID: 01.0f.4a.cf.55.ff.26.54.00.00.00.00.00.00.19.04.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): UNKNOWN
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Node name: bt_navigator
+Node namespace: /
+Topic type: nav_msgs/msg/Odometry
+Endpoint type: SUBSCRIPTION
+GID: 01.0f.4a.cf.58.01.14.f9.00.00.00.00.00.00.20.04.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: BEST_EFFORT
+  History (Depth): UNKNOWN
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Node name: rtabmap_viz
+Node namespace: /
+Topic type: nav_msgs/msg/Odometry
+Endpoint type: SUBSCRIPTION
+GID: 01.0f.4a.cf.6b.01.44.0c.00.00.00.00.00.00.39.04.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: BEST_EFFORT
+  History (Depth): UNKNOWN
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Node name: route_goal_navigator
+Node namespace: /
+Topic type: nav_msgs/msg/Odometry
+Endpoint type: SUBSCRIPTION
+GID: 01.0f.4a.cf.92.08.11.6a.00.00.00.00.00.00.13.04.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: BEST_EFFORT
+  History (Depth): UNKNOWN
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ B — LiDAR (ilk bulunan topic ölçülür)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Bulunan LiDAR topic: /world/default/model/x500_mono_cam_0/link/link/sensor/lidar_2d_v2/scan
+
+>>> HZ ~12s: /world/default/model/x500_mono_cam_0/link/link/sensor/lidar_2d_v2/scan
+WARNING: topic [/world/default/model/x500_mono_cam_0/link/link/sensor/lidar_2d_v2/scan] does not appear to be published yet
+average rate: 8.955
+	min: 0.000s max: 0.393s std dev: 0.10530s window: 11
+average rate: 9.502
+	min: 0.000s max: 0.393s std dev: 0.08062s window: 20
+average rate: 12.248
+	min: 0.059s max: 0.104s std dev: 0.01347s window: 20
+average rate: 11.836
+	min: 0.057s max: 0.132s std dev: 0.01690s window: 20
+average rate: 11.155
+	min: 0.057s max: 0.132s std dev: 0.01858s window: 20
+average rate: 11.380
+	min: 0.055s max: 0.121s std dev: 0.01523s window: 20
+average rate: 12.123
+	min: 0.055s max: 0.102s std dev: 0.01313s window: 20
+average rate: 12.361
+	min: 0.056s max: 0.101s std dev: 0.01139s window: 20
+average rate: 11.472
+	min: 0.055s max: 0.120s std dev: 0.01722s window: 20
+(hz: timeout, topic yok veya hz desteklenmiyor — son exit: 124)
+
+>>> node list (bridge)
+>>> $ ros2 node list 2>&1 | grep -i bridge || true
+/clock_bridge
+/gz_camera_bridge
+/gz_camera_info_bridge
+/gz_imu_bridge
+/gz_lidar_points_bridge
+/gz_lidar_scan_bridge
+/gz_radar_points_bridge
+/px4_odom_bridge
+--- (exit: 0)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ C — Nav2 / costmap
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+>>> HZ ~12s: /local_costmap/costmap
+average rate: 0.346
+	min: 2.599s max: 3.184s std dev: 0.29244s window: 2
+average rate: 0.358
+	min: 2.599s max: 3.184s std dev: 0.27427s window: 3
+(hz: timeout, topic yok veya hz desteklenmiyor — son exit: 124)
+
+>>> HZ ~12s: /global_costmap/costmap
+(hz: timeout, topic yok veya hz desteklenmiyor — son exit: 124)
+
+>>> ros2 topic info -v /local_costmap/costmap
+Type: nav_msgs/msg/OccupancyGrid
+
+Publisher count: 1
+
+Node name: local_costmap
+Node namespace: /local_costmap
+Topic type: nav_msgs/msg/OccupancyGrid
+Endpoint type: PUBLISHER
+GID: 01.0f.4a.cf.4c.01.f2.13.00.00.00.00.00.00.42.03.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): UNKNOWN
+  Durability: TRANSIENT_LOCAL
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Subscription count: 1
+
+Node name: costmap_patch_node
+Node namespace: /
+Topic type: nav_msgs/msg/OccupancyGrid
+Endpoint type: SUBSCRIPTION
+GID: 01.0f.4a.cf.0a.08.2a.9a.00.00.00.00.00.00.11.04.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): UNKNOWN
+  Durability: TRANSIENT_LOCAL
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+
+>>> Not: TRANSIENT_LOCAL costmap için 'ros2 topic echo' varsayılan QoS ile boş görünebilir.
+>>> Örnek (Humble+): ros2 topic echo /local_costmap/costmap --qos-durability transient_local --once
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ D — Rota özel
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+>>> HZ ~12s: /route/costmap_patch
+average rate: 9.996
+	min: 0.094s max: 0.106s std dev: 0.00385s window: 11
+average rate: 9.992
+	min: 0.094s max: 0.106s std dev: 0.00331s window: 20
+average rate: 10.013
+	min: 0.095s max: 0.106s std dev: 0.00249s window: 20
+average rate: 10.013
+	min: 0.095s max: 0.106s std dev: 0.00232s window: 20
+average rate: 9.986
+	min: 0.097s max: 0.104s std dev: 0.00172s window: 20
+average rate: 9.978
+	min: 0.087s max: 0.112s std dev: 0.00432s window: 20
+average rate: 9.988
+	min: 0.087s max: 0.112s std dev: 0.00458s window: 20
+average rate: 10.005
+	min: 0.095s max: 0.104s std dev: 0.00260s window: 20
+average rate: 9.997
+	min: 0.095s max: 0.104s std dev: 0.00225s window: 20
+failed to shutdown: rcl_shutdown already called on the given context, at ./src/rcl/init.c:241
+(hz: timeout, topic yok veya hz desteklenmiyor — son exit: 124)
+
+>>> ros2 topic info -v /route/costmap_patch
+Type: sensor_msgs/msg/Image
+
+Publisher count: 1
+
+Node name: costmap_patch_node
+Node namespace: /
+Topic type: sensor_msgs/msg/Image
+Endpoint type: PUBLISHER
+GID: 01.0f.4a.cf.0a.08.2a.9a.00.00.00.00.00.00.13.03.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): UNKNOWN
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Subscription count: 0
+
+
+>>> HZ ~12s: /plan
+average rate: 2.625
+	min: 0.018s max: 0.522s std dev: 0.21005s window: 4
+average rate: 2.770
+	min: 0.018s max: 0.522s std dev: 0.20778s window: 7
+average rate: 2.735
+	min: 0.018s max: 0.522s std dev: 0.19525s window: 11
+average rate: 2.888
+	min: 0.018s max: 0.522s std dev: 0.18620s window: 15
+average rate: 2.888
+	min: 0.018s max: 0.522s std dev: 0.17695s window: 18
+average rate: 2.960
+	min: 0.018s max: 0.502s std dev: 0.16838s window: 20
+average rate: 2.947
+	min: 0.050s max: 0.502s std dev: 0.15042s window: 20
+average rate: 2.932
+	min: 0.085s max: 0.502s std dev: 0.13620s window: 20
+(hz: timeout, topic yok veya hz desteklenmiyor — son exit: 124)
+
+>>> plan --once (içerik)
+>>> $ timeout 5 ros2 topic echo /plan --once 2>&1 || true
+header:
+  stamp:
+    sec: 1774274286
+    nanosec: 559666855
+  frame_id: map
+poses:
+- header:
+    stamp:
+      sec: 1774274286
+      nanosec: 559666855
+    frame_id: map
+  pose:
+    position:
+      x: -20.0
+      y: 15.0
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+- header:
+    stamp:
+      sec: 1774274286
+      nanosec: 559666855
+    frame_id: map
+  pose:
+    position:
+      x: -20.0
+      y: 10.0
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+- header:
+    stamp:
+      sec: 1774274286
+      nanosec: 559666855
+    frame_id: map
+  pose:
+    position:
+      x: -15.0
+      y: 10.0
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+- header:
+    stamp:
+      sec: 1774274286
+      nanosec: 559666855
+    frame_id: map
+  pose:
+    position:
+      x: -15.0
+      y: 15.0
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+- header:
+    stamp:
+      sec: 1774274286
+      nanosec: 559666855
+    frame_id: map
+  pose:
+    position:
+      x: -15.0
+      y: 20.0
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+- header:
+    stamp:
+      sec: 1774274286
+      nanosec: 559666855
+    frame_id: map
+  pose:
+    position:
+      x: -20.0
+      y: 20.0
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      w: 1.0
+---
+--- (exit: 0)
+
+>>> HZ ~12s: /fmu/in/trajectory_setpoint
+average rate: 20.032
+	min: 0.038s max: 0.057s std dev: 0.00346s window: 20
+average rate: 19.952
+	min: 0.030s max: 0.072s std dev: 0.00703s window: 20
+average rate: 19.996
+	min: 0.039s max: 0.061s std dev: 0.00448s window: 20
+average rate: 20.154
+	min: 0.039s max: 0.056s std dev: 0.00359s window: 20
+average rate: 20.023
+	min: 0.044s max: 0.054s std dev: 0.00250s window: 20
+average rate: 19.924
+	min: 0.046s max: 0.055s std dev: 0.00255s window: 20
+average rate: 19.055
+	min: 0.041s max: 0.106s std dev: 0.01270s window: 20
+average rate: 20.068
+	min: 0.034s max: 0.060s std dev: 0.00487s window: 20
+average rate: 19.998
+	min: 0.035s max: 0.062s std dev: 0.00560s window: 20
+(hz: timeout, topic yok veya hz desteklenmiyor — son exit: 124)
+
+>>> goal_pose hz
+>>> $ timeout 12 ros2 topic hz /goal_pose -w 10 2>&1 || true
+--- (exit: 0)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ E — Threat zinciri
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+>>> YOLO detections hz
+>>> $ timeout 12 ros2 topic hz /yolo/detections -w 15 2>&1 || true
+average rate: 10.180
+	min: 0.040s max: 0.154s std dev: 0.03372s window: 11
+average rate: 10.254
+	min: 0.054s max: 0.167s std dev: 0.03365s window: 15
+average rate: 12.141
+	min: 0.054s max: 0.110s std dev: 0.01613s window: 15
+average rate: 11.437
+	min: 0.054s max: 0.133s std dev: 0.02445s window: 15
+average rate: 11.208
+	min: 0.044s max: 0.133s std dev: 0.02510s window: 15
+average rate: 11.921
+	min: 0.050s max: 0.114s std dev: 0.02134s window: 15
+average rate: 11.987
+	min: 0.050s max: 0.124s std dev: 0.02176s window: 15
+average rate: 11.000
+	min: 0.035s max: 0.141s std dev: 0.03350s window: 15
+average rate: 11.630
+	min: 0.043s max: 0.141s std dev: 0.02439s window: 15
+--- (exit: 0)
+
+>>> projected detections hz
+>>> $ timeout 12 ros2 topic hz /yolo/projected_detections -w 15 2>&1 || true
+--- (exit: 0)
+
+>>> ros2 topic info -v /threat/state_vec
+Type: std_msgs/msg/Float32MultiArray
+
+Publisher count: 1
+
+Node name: threat_encoder_v2
+Node namespace: /
+Topic type: std_msgs/msg/Float32MultiArray
+Endpoint type: PUBLISHER
+GID: 01.0f.4a.cf.55.ff.26.54.00.00.00.00.00.00.17.03.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): UNKNOWN
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Subscription count: 1
+
+Node name: threat_target_node
+Node namespace: /
+Topic type: std_msgs/msg/Float32MultiArray
+Endpoint type: SUBSCRIPTION
+GID: 01.0f.4a.cf.7f.07.c8.3e.00.00.00.00.00.00.11.04.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): UNKNOWN
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+
+>>> HZ ~12s: /threat/state_vec
+average rate: 3.382
+	min: 0.000s max: 0.608s std dev: 0.17575s window: 6
+average rate: 3.458
+	min: 0.000s max: 0.608s std dev: 0.13683s window: 10
+average rate: 3.559
+	min: 0.000s max: 0.608s std dev: 0.11430s window: 15
+average rate: 3.672
+	min: 0.000s max: 0.608s std dev: 0.10172s window: 20
+average rate: 3.743
+	min: 0.212s max: 0.334s std dev: 0.03305s window: 20
+average rate: 3.800
+	min: 0.212s max: 0.334s std dev: 0.03280s window: 20
+average rate: 3.834
+	min: 0.212s max: 0.334s std dev: 0.03218s window: 20
+average rate: 3.902
+	min: 0.212s max: 0.321s std dev: 0.02849s window: 20
+(hz: timeout, topic yok veya hz desteklenmiyor — son exit: 124)
+
+>>> ros2 topic info -v /threat/target_scores
+Type: std_msgs/msg/Float32MultiArray
+
+Publisher count: 1
+
+Node name: threat_target_node
+Node namespace: /
+Topic type: std_msgs/msg/Float32MultiArray
+Endpoint type: PUBLISHER
+GID: 01.0f.4a.cf.7f.07.c8.3e.00.00.00.00.00.00.12.03.00.00.00.00.00.00.00.00
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): UNKNOWN
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Subscription count: 0
+
+
+>>> HZ ~12s: /threat/target_scores
+average rate: 3.804
+	min: 0.053s max: 0.566s std dev: 0.16707s window: 5
+average rate: 3.631
+	min: 0.053s max: 0.566s std dev: 0.12606s window: 9
+average rate: 3.712
+	min: 0.053s max: 0.566s std dev: 0.10541s window: 13
+average rate: 3.731
+	min: 0.053s max: 0.566s std dev: 0.09270s window: 17
+average rate: 3.715
+	min: 0.053s max: 0.566s std dev: 0.08564s window: 20
+average rate: 3.585
+	min: 0.240s max: 0.443s std dev: 0.04505s window: 20
+average rate: 3.518
+	min: 0.240s max: 0.443s std dev: 0.04649s window: 20
+average rate: 3.475
+	min: 0.240s max: 0.443s std dev: 0.04487s window: 20
+(hz: timeout, topic yok veya hz desteklenmiyor — son exit: 124)
+
+>>> use_sim_time (repoda node adları: threat_encoder_node, threat_target_node)
+
+>>> ros2 param get /threat_encoder_node use_sim_time
+Node not found
+(node '/threat_encoder_node' yok veya parametre erişilemedi)
+
+>>> ros2 param get /threat_target_node use_sim_time
+Boolean value is: False
+
+>>> ros2 param get /threat_encoder_v2 use_sim_time
+Boolean value is: True
+
+>>> ros2 param get /target_node use_sim_time
+Node not found
+(node '/target_node' yok veya parametre erişilemedi)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ F — Env / eğitim ile ilgili topic'ler
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+>>> HZ ~12s: /route/waypoint_desired
+WARNING: topic [/route/waypoint_desired] does not appear to be published yet
+(hz: timeout, topic yok veya hz desteklenmiyor — son exit: 124)
+
+>>> route_curriculum env node var mı
+>>> $ ros2 node list 2>&1 | grep -E 'route_curriculum|curriculum_env' || true
+--- (exit: 0)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ G — Özet: zorunlu topic var mı?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [VAR]  /clock
+  [VAR]  /odometry/filtered
+  [VAR]  /threat/state_vec
+  [VAR]  /threat/target_scores
+  [VAR]  /route/costmap_patch
+  [VAR]  /local_costmap/costmap
+  [VAR]  /global_costmap/costmap
+  [VAR]  /plan
+  [VAR]  /goal_pose
+  [VAR]  /fmu/in/trajectory_setpoint
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ BİTTİ
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Rapor kaydedildi: /home/ubuntu/Desktop/ros2_env/uav_ws/logs/route_pipeline_health_20260323_135620.txt
+================================================================================
