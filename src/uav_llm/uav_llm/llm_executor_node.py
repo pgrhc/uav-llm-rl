@@ -35,6 +35,7 @@ from rclpy.qos import (
 )
 
 from std_msgs.msg import String
+from nav_msgs.msg import Path
 from px4_msgs.msg import (
     OffboardControlMode,
     TrajectorySetpoint,
@@ -111,6 +112,9 @@ class LLMExecutorNode(Node):
             String, "/llm/parsed_command",
             self._cb_command, 10,
         )
+        self.create_subscription(Path, "/plan", self._cb_plan, 10)
+        self.current_path_poses = []
+        self.path_index = 0
 
         self.pub_feedback = self.create_publisher(
             String, "/llm/execution_feedback", 10
@@ -285,8 +289,10 @@ class LLMExecutorNode(Node):
             self.get_logger().warning(
                 f"Offboard moddan çıkıldı! nav_state={msg.nav_state}"
             )
-            action = self.active_cmd.get("action", "unknown") if self.active_cmd else "unknown"
-            self._publish_feedback("failure", action, "Loss of offboard mode")
+            if self.active_cmd is not None:
+                action = self.active_cmd.get("action", "unknown")
+                if action not in ("land", "disarm"):
+                    self._publish_feedback("failure", action, "Loss of offboard mode")
 
         was_armed = self.is_armed
         self.is_armed = (msg.arming_state == VehicleStatus.ARMING_STATE_ARMED)
@@ -334,31 +340,38 @@ class LLMExecutorNode(Node):
             else:
                 self._send_disarm()
             return True
-        if action in ("takeoff", "takeoff_x"):
+        if action in ("takeoff", "takeoff_x", "takeoff_to_altitude"):
             if not self.is_armed:
                 self.get_logger().warning("Takeoff için önce arm et!")
+                self._publish_feedback("failure", action, "Cannot takeoff: drone is not armed.")
                 return True
-            height = float(cmd.get("delta_z", self.default_takeoff_h))
-            if height <= 0:
-                height = self.default_takeoff_h
-            target_z = self._clamp_z(self.current_z - height)
+            
+            if "target_altitude" in cmd and cmd["target_altitude"] is not None:
+                height = float(cmd["target_altitude"])
+                target_z = self._clamp_z(-height)  # NED coordinates are negative up!
+                self.get_logger().info(f"Takeoff to absolute altitude: {height}m -> {target_z:.2f} NED")
+            else:
+                height = float(cmd.get("delta_z", self.default_takeoff_h))
+                if height <= 0:
+                    height = self.default_takeoff_h
+                target_z = self._clamp_z(self.current_z - height)
+                self.get_logger().info(f"Takeoff delta_z {height:.1f}m -> {target_z:.2f} NED")
+                
             self.target_x   = self.current_x
             self.target_y   = self.current_y
             self.target_z   = target_z
             self.target_yaw = self.current_yaw
             self.active_cmd = {"action": action}
             self._engage_offboard()
-            self.get_logger().info(
-                f"Takeoff: {height:.1f}m → target_z={target_z:.2f} (NED)"
-            )
             return True
         if action == "land":
             self._send_land()
-            self.active_cmd = None
+            self.active_cmd = {"action": action}
             return True
         if action in ("return_home", "rth", "rtl"):
             if self.home_x is None:
                 self.get_logger().warning("Home noktası bilinmiyor!")
+                self._publish_feedback("failure", action, "Home point not recorded.")
                 return True
             safe_z = self._clamp_z(self.home_z - self.default_takeoff_h)
             self.target_x   = self.home_x
@@ -398,6 +411,25 @@ class LLMExecutorNode(Node):
             "reasoning":  cmd.get("reasoning", ""),
         }
 
+    def _cb_plan(self, msg: Path):
+        self.current_path_poses = msg.poses
+        self.get_logger().info(f"Yol (path) alındı: {len(self.current_path_poses)} waypoint.")
+
+    def _set_target_from_path(self, action: str):
+        if self.path_index < len(self.current_path_poses):
+            pose = self.current_path_poses[self.path_index].pose
+            # /plan topic provides Poses in ENU (x=East, y=North)
+            # PX4 requires targets in NED (target_x=North, target_y=East)
+            self.target_x = pose.position.y  
+            self.target_y = pose.position.x  
+            self.target_z = self.current_z
+            self.active_cmd = {"action": action}
+            self.get_logger().info(f"Path waypoint {self.path_index + 1}/{len(self.current_path_poses)} hedefleniyor -> (N:{self.target_x:.2f}, E:{self.target_y:.2f})")
+        else:
+            self.get_logger().info("Yol tamamlandı.")
+            self._publish_feedback("success", action, "Finished following path.")
+            self.active_cmd = None
+
     def _cb_timer(self):
         if self.current_x is None:
             return
@@ -411,6 +443,11 @@ class LLMExecutorNode(Node):
         if self.pending_cmd is not None:
             action = self.pending_cmd.get("action", "hover")
             if self._handle_special(action, self.pending_cmd):
+                if action in ("arm", "disarm"):
+                    self.active_cmd = {"action": action}
+                elif action == "land":
+                    self._publish_feedback("success", action, "Landing initiated")
+                    self.active_cmd = None
                 self.pending_cmd = None
                 return
             if action == "hover":
@@ -421,6 +458,17 @@ class LLMExecutorNode(Node):
                 self.active_cmd = None
                 self.pending_cmd = None
                 self.get_logger().info("Hover: mevcut konumda tutuluyor.")
+                self._publish_feedback("success", action, "Hover active")
+                return
+            if action == "follow_path":
+                if not self.current_path_poses:
+                    self.get_logger().warning("Yol (path) bulunmuyor, hover yapılıyor.")
+                    self._publish_feedback("failure", action, "No path available to follow.")
+                    self.pending_cmd = None
+                    return
+                self.path_index = 0
+                self._set_target_from_path(action)
+                self.pending_cmd = None
                 return
             target = self._build_target(self.pending_cmd)
             self.target_x   = target["target_x"]
@@ -436,14 +484,33 @@ class LLMExecutorNode(Node):
             )
 
 
-        if self.active_cmd is not None and self._has_arrived():
+        if self.active_cmd is not None:
             action = self.active_cmd.get("action", "")
-            self.get_logger().info(f"Hedefe ulaşıldı: {action}")
-            self._publish_feedback("success", action, "Reached target")
-            if action == "return_home":
-                self.get_logger().info("Home'a ulaşıldı → Land.")
-                self._send_land()
-            self.active_cmd = None
+            
+            if action == "arm":
+                if self.is_armed:
+                    self._publish_feedback("success", action, "Armed successfully")
+                    self.active_cmd = None
+            elif action == "disarm":
+                if not self.is_armed:
+                    self._publish_feedback("success", action, "Disarmed successfully")
+                    self.active_cmd = None
+            elif self._has_arrived():
+                if action == "follow_path":
+                    self.path_index += 1
+                    if self.path_index < len(self.current_path_poses):
+                        self._set_target_from_path(action)
+                    else:
+                        self.get_logger().info("Tüm yol başarıyla katedildi!")
+                        self._publish_feedback("success", action, "Reached final path waypoint")
+                        self.active_cmd = None
+                else:
+                    self.get_logger().info(f"Hedefe ulaşıldı: {action}")
+                    self._publish_feedback("success", action, "Reached target")
+                    if action == "return_home":
+                        self.get_logger().info("Home'a ulaşıldı → Land.")
+                        self._send_land()
+                    self.active_cmd = None
 
 def main(args=None):
     rclpy.init(args=args)

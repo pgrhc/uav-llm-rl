@@ -8,10 +8,10 @@ from dataclasses import dataclass
 WORLD_NAME = "default"
 WALL_HEIGHT = 7
 WALL_THICKNESS = 0.2
-CELL_SIZE = 3.0
+CELL_SIZE = 5.0
 Z_CENTER = WALL_HEIGHT / 2
 
-ROWS, COLS = 15, 15
+ROWS, COLS = 5, 5
 random.seed(time.time_ns())
 
 # --- DÜZELTME 1: İNSAN SAYISI AYARI ---

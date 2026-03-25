@@ -92,12 +92,17 @@ class PlanReviewUINode(Node):
         with self._prompt_lock:
             try:
                 self.print_plan(plan)
-                decision = self.ask_decision()
-
-                if decision == "a":
+                
+                if not plan.get("requires_approval", True):
+                    print("\n--> Plan does not require approval. Auto-approving.")
                     self.publish_approved(plan)
                 else:
-                    self.publish_rejected(plan)
+                    decision = self.ask_decision()
+    
+                    if decision == "a":
+                        self.publish_approved(plan)
+                    else:
+                        self.publish_rejected(plan)
 
             except Exception as e:
                 self.get_logger().error(f"Review UI error: {e}")

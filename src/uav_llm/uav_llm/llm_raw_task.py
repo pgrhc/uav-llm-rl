@@ -2,6 +2,7 @@
 
 import json
 import re
+import threading
 import uuid
 from dataclasses import dataclass, asdict, field
 from typing import Optional, List
@@ -54,8 +55,13 @@ Allowed actions:
 - rotate_cw
 - rotate_ccw
 - return_home
+- follow_path
 
 Rules:
+- Coordinate System (Body Frame):
+  - delta_x handles Forward/Backward (positive = Forward, negative = Backward)
+  - delta_y handles Right/Left (positive = Right, negative = Left)
+  - delta_z handles Descend/Ascend (positive = Descend, negative = Ascend)
 - Output JSON only.
 - If the user asks for multiple actions, split them into ordered steps.
 - If altitude is explicitly requested for takeoff, use target_altitude.
@@ -129,21 +135,32 @@ class LLMMissionPlanner:
 
     def _extract_json(self, raw: str) -> dict:
         match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw, re.DOTALL)
-        if match:
-            clean_json = match.group(1)
+        clean_json = match.group(1) if match else raw
+        
+        start = clean_json.find('{')
+        end = clean_json.rfind('}') + 1
+        if start != -1 and end != -1:
+            clean_json = clean_json[start:end]
         else:
-            start = raw.find('{')
-            end = raw.rfind('}') + 1
-            if start != -1 and end != -1:
-                clean_json = raw[start:end]
-            else:
-                raise ValueError(f"JSON not found. Raw output:\n{raw}")
-        return json.loads(clean_json)
+            raise ValueError(f"JSON not found. Raw output:\n{raw}")
+            
+        try:
+            return json.loads(clean_json)
+        except json.JSONDecodeError as e:
+            try:
+                import ast
+                p = clean_json.replace("true", "True").replace("false", "False").replace("null", "None")
+                parsed = ast.literal_eval(p)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
+            raise ValueError(f"Failed to parse JSON: {str(e)}\nRaw String:\n{clean_json}")
 
     def _validate_action(self, action: str) -> bool:
         allowed = {"arm", "disarm", "takeoff_to_altitude", "land", "hover", 
                   "move_forward", "move_backward", "move_left", "move_right", 
-                  "ascend", "descend", "rotate_cw", "rotate_ccw", "return_home"}
+                  "ascend", "descend", "rotate_cw", "rotate_ccw", "return_home", "follow_path"}
         return action in allowed
 
 
@@ -253,6 +270,10 @@ class LLMMissionPlanner:
 
         if re.search(r"\bhover\b|\bstop\b|\bwait\b", text):
             steps.append(PlanStep(step_id=step_id, action="hover"))
+            step_id += 1
+            
+        if re.search(r"\bfollow (the )?(plan|path|waypoint(s)?)\b", text):
+            steps.append(PlanStep(step_id=step_id, action="follow_path"))
             step_id += 1
 
         val = self._extract_first_number_after(
@@ -463,15 +484,22 @@ class LLMTaskNode(Node):
             10,
         )
         self.last_user_command = ""
+        self.replan_count = 0
 
         self.parsed_plan_pub = self.create_publisher(
             String,
             "/llm/parsed_plan",
             10,
         )
+        
+        self.parsed_command_pub = self.create_publisher(
+            String,
+            "/llm/parsed_command",
+            10,
+        )
 
         self.get_logger().info(
-            "LLM task node started. Listening on /llm/user_command_raw and publishing /llm/parsed_plan"
+            "LLM task node started. Listening on /llm/user_command_raw and publishing /llm/parsed_plan and drift prevention hovers"
         )
 
     def system_summary_callback(self, msg: String):
@@ -484,6 +512,10 @@ class LLMTaskNode(Node):
                 reason = feedback.get("reason", "unknown error")
                 self.get_logger().warn(f"Execution failed: {reason}. Replanning...")
                 if self.last_user_command:
+                    if self.replan_count >= 2:
+                        self.get_logger().error("Max replan attempts reached. Aborting recovery mode.")
+                        return
+                    self.replan_count += 1
                     recovery_prompt = f"Original command: '{self.last_user_command}'. The execution failed with reason: {reason}. Provide an alternative safe plan."
                     self.command_callback(String(data=recovery_prompt))
         except Exception as e:
@@ -491,9 +523,29 @@ class LLMTaskNode(Node):
 
     def command_callback(self, msg: String):
         user_text = msg.data.strip()
-        self.last_user_command = user_text
+        
+        is_recovery = "Provide an alternative safe plan." in user_text
+        if not is_recovery:
+            self.last_user_command = user_text
+            self.replan_count = 0
+            
+            hover_cmd = {
+                "action": "hover",
+                "delta_x": 0.0, "delta_y": 0.0, "delta_z": 0.0, "delta_yaw": 0.0, "speed": 1.0,
+                "reasoning": "Prioritizing hover during generation phase."
+            }
+            if hasattr(self, 'parsed_command_pub'):
+                self.parsed_command_pub.publish(String(data=json.dumps(hover_cmd)))
+
         self.get_logger().info(f"Received raw command: {user_text}")
 
+        threading.Thread(
+            target=self._generate_plan_process,
+            args=(user_text,),
+            daemon=True
+        ).start()
+
+    def _generate_plan_process(self, user_text: str):
         try:
             self.planner.set_state(self.latest_system_summary)
             plan = self.planner.plan(user_text)

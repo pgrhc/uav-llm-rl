@@ -20,6 +20,12 @@ class ExecutorNode(Node):
             self.approved_plan_callback,
             10
         )
+        self.feedback_sub = self.create_subscription(
+            String,
+            "/llm/execution_feedback",
+            self.feedback_callback,
+            10
+        )
         self.command_pub = self.create_publisher(
             String,
             "/llm/parsed_command",
@@ -37,6 +43,7 @@ class ExecutorNode(Node):
         self.current_step_index: int = -1
         self.step_deadline: Optional[float] = None
         self.plan_running: bool = False
+        self.waiting_for_feedback: bool = False
 
         self.timer = self.create_timer(0.1, self.timer_callback)
 
@@ -72,6 +79,7 @@ class ExecutorNode(Node):
         self.current_step_index = -1
         self.step_deadline = None
         self.plan_running = True
+        self.waiting_for_feedback = False
 
         self.get_logger().info(
             f"Approved plan received: {plan.get('plan_id', 'unknown_plan')} "
@@ -87,14 +95,47 @@ class ExecutorNode(Node):
         self.start_next_step()
 
     def timer_callback(self):
-        if not self.plan_running:
+        if not self.plan_running or not self.waiting_for_feedback:
             return
 
         if self.step_deadline is None:
             return
 
         if time.time() >= self.step_deadline:
-            self.start_next_step()
+            plan_id = self.active_plan.get("plan_id", "unknown_plan") if self.active_plan else "unknown"
+            self.get_logger().error(f"Step timeout reached.")
+            self.publish_status(
+                plan_id=plan_id,
+                current_step=self.current_step_index + 1,
+                status="failed",
+                message="Step execution timed out."
+            )
+            self.reset_execution_state()
+
+    def feedback_callback(self, msg: String):
+        if not self.plan_running or not self.waiting_for_feedback:
+            return
+
+        try:
+            feedback = json.loads(msg.data)
+            status = feedback.get("status")
+
+            if status == "success":
+                self.waiting_for_feedback = False
+                self.start_next_step()
+            elif status == "failure":
+                reason = feedback.get("reason", "unknown error")
+                plan_id = self.active_plan.get("plan_id", "unknown_plan") if self.active_plan else "unknown"
+                self.get_logger().error(f"Step failed from feedback: {reason}")
+                self.publish_status(
+                    plan_id=plan_id,
+                    current_step=self.current_step_index + 1,
+                    status="failed",
+                    message=f"Step execution failed: {reason}"
+                )
+                self.reset_execution_state()
+        except Exception as e:
+            self.get_logger().error(f"Failed to parse feedback: {e}")
 
     def start_next_step(self):
         if self.active_plan is None:
@@ -125,7 +166,8 @@ class ExecutorNode(Node):
             out.data = json.dumps(command_dict, ensure_ascii=False)
             self.command_pub.publish(out)
 
-            self.step_deadline = time.time() + estimated_duration
+            self.step_deadline = time.time() + max(30.0, estimated_duration * 2)
+            self.waiting_for_feedback = True
 
             self.publish_status(
                 plan_id=plan_id,
@@ -181,6 +223,9 @@ class ExecutorNode(Node):
 
         if action in ["arm", "disarm"]:
             return 2.0
+            
+        if action == "follow_path":
+            return 120.0
 
         if action == "takeoff_to_altitude":
             target_altitude = step.get("target_altitude", 5.0)
@@ -229,6 +274,9 @@ class ExecutorNode(Node):
 
         if action == "arm":
             return "Arming vehicle"
+            
+        if action == "follow_path":
+            return "Following waypoints from /plan"
 
         if action == "disarm":
             return "Disarming vehicle"
@@ -298,6 +346,7 @@ class ExecutorNode(Node):
         self.current_step_index = -1
         self.step_deadline = None
         self.plan_running = False
+        self.waiting_for_feedback = False
 
 
 def main(args=None):
