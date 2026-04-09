@@ -3,7 +3,7 @@
 Route Planning Agent — Gazebo-based Gymnasium Environment  (Faz 1)
 
 Observation:
-    costmap_patch  : (1, 64, 64)  — CNN /route/costmap_patch (costmap_patch_node: varsayılan harita eksenli)
+    lidar_vector   : (36,)        — MLP input   /threat/state_vec lidar subset
     threat_vector  : (74,)        — MLP input   /threat/state_vec
     threat_scores  : (5,)         — MLP input   /threat/target_scores
     goal_state     : (7,)         — MLP input   (rel_goal, dist, speed, yaw)
@@ -34,11 +34,8 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 
 from std_msgs.msg import Float32MultiArray
-from sensor_msgs.msg import Image
 from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from geometry_msgs.msg import PoseStamped
-from cv_bridge import CvBridge
-import cv2
 
 
 class RouteEnv(gym.Env):
@@ -68,8 +65,8 @@ class RouteEnv(gym.Env):
         )
 
         self.observation_space = spaces.Dict({
-            "costmap_patch": spaces.Box(
-                low=0.0, high=1.0, shape=(1, 64, 64), dtype=np.float32
+            "lidar_vector": spaces.Box(
+                low=-np.inf, high=np.inf, shape=(36,), dtype=np.float32
             ),
             "threat_vector": spaces.Box(
                 low=-np.inf, high=np.inf, shape=(74,), dtype=np.float32
@@ -100,20 +97,19 @@ class RouteEnv(gym.Env):
         self.prev_action = np.zeros(4, dtype=np.float32)
         self.step_count = 0
 
+        self.action_ema_alpha = float(os.environ.get("ROUTE_ACTION_EMA_ALPHA", "0.2"))
+        self.smoothed_action = np.zeros(4, dtype=np.float32)
+
         # Sensor buffers
-        self.costmap_patch = np.zeros((1, 64, 64), dtype=np.float32)
         self.threat_vector = np.zeros(74, dtype=np.float32)
         self.threat_scores = np.zeros(5, dtype=np.float32)
         self.a_star_poses = []
         self.latest_costmap = None
 
         # Freshness flags
-        self.new_patch = False
         self.new_threat = False
         self.new_odom = False
         self.cond = threading.Condition()
-
-        self.bridge = CvBridge()
 
         # --- ROS 2 ---
         if not rclpy.ok():
@@ -143,9 +139,6 @@ class RouteEnv(gym.Env):
             depth=10,
         )
 
-        self.node.create_subscription(
-            Image, "/route/costmap_patch", self._cb_patch, 10
-        )
         self.node.create_subscription(
             Float32MultiArray, "/threat/state_vec", self._cb_threat, 10
         )
@@ -184,18 +177,6 @@ class RouteEnv(gym.Env):
     # ------------------------------------------------------------------ #
     # Callbacks
     # ------------------------------------------------------------------ #
-    def _cb_patch(self, msg: Image):
-        try:
-            cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="mono8")
-            cv_img = cv2.resize(cv_img, (64, 64))
-            normalized = cv_img.astype(np.float32) / 255.0
-            with self.cond:
-                self.costmap_patch[0] = normalized
-                self.new_patch = True
-                self.cond.notify_all()
-        except Exception:
-            pass
-
     def _cb_threat(self, msg: Float32MultiArray):
         data = np.array(msg.data, dtype=np.float32)
         if data.shape[0] == 74:
@@ -254,8 +235,7 @@ class RouteEnv(gym.Env):
         end = time.time() + timeout
         with self.cond:
             while time.time() < end:
-                if self.new_patch and self.new_threat and self.new_odom:
-                    self.new_patch = False
+                if self.new_threat and self.new_odom:
                     self.new_threat = False
                     self.new_odom = False
                     return True
@@ -313,8 +293,9 @@ class RouteEnv(gym.Env):
         return result
 
     def _get_obs(self) -> dict:
+        lidar_vec = self.threat_vector[self.LIDAR_START_IDX:self.LIDAR_END_IDX].copy()
         return {
-            "costmap_patch": self.costmap_patch.copy(),
+            "lidar_vector": lidar_vec,
             "threat_vector": self.threat_vector.copy(),
             "threat_scores": np.clip(self.threat_scores.copy(), 0.0, 1.0),
             "goal_state": self._build_goal_state(),
@@ -382,9 +363,41 @@ class RouteEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.prev_action = np.zeros(4, dtype=np.float32)
+        self.smoothed_action = np.zeros(4, dtype=np.float32)
+        self.episode_reward = 0.0
         self.step_count = 0
 
-        self._wait_obs(timeout=2.0)
+        self._soft_reset_drone()
+        
+        with self.cond:
+            self._reset_wall_time = time.time()
+            if hasattr(self, 'a_star_poses'):
+                self.a_star_poses = []  # Clear old plan memory
+
+        obs_ok = False
+        plan_ok = False
+        
+        for attempt in range(10):
+            obs_ok = self._wait_obs(timeout=2.0)
+            
+            with self.cond:
+                if obs_ok and hasattr(self, 'a_star_poses') and self.a_star_poses:
+                    # New plan logic: First A* point must be close to current drone position
+                    start_x, start_y = self.a_star_poses[0]
+                    dist_to_start = math.hypot(start_x - self.drone_x, start_y - self.drone_y)
+                    if dist_to_start < 3.0:
+                        plan_ok = True
+                        break
+                elif obs_ok and not hasattr(self, 'a_star_poses'):
+                    # If this env instance doesn't use hybrid A*, just obs is enough
+                    plan_ok = True
+                    break
+                        
+            self.node.get_logger().warn(f"Reset sync retry {attempt + 1}/10 (obs: {obs_ok}, plan_ok: {plan_ok})")
+            time.sleep(0.5)
+
+        if not obs_ok or not plan_ok:
+            self.node.get_logger().warn("Reset sonrası obs veya yeni plan tam senkron olamadı, yine de başlanıyor.")
 
         self.prev_dist_to_goal = self._dist_to_goal()
         return self._get_obs(), {}
@@ -392,16 +405,20 @@ class RouteEnv(gym.Env):
     def step(self, action: np.ndarray):
         self.step_count += 1
         action = np.clip(action, -1.0, 1.0)
+        self.smoothed_action = self.action_ema_alpha * action + (1.0 - self.action_ema_alpha) * self.smoothed_action
 
-        dx = float(action[0]) * self.STEP_SIZE
-        dy = float(action[1]) * self.STEP_SIZE
-        dz = float(action[2]) * self.Z_STEP
-        dyaw = float(action[3]) * self.MAX_YAW_RATE
+        with self.cond:
+            dx, dy = self.drone_x, self.drone_y
+
+        dx_step = float(self.smoothed_action[0]) * self.STEP_SIZE
+        dy_step = float(self.smoothed_action[1]) * self.STEP_SIZE
+        dz = float(self.smoothed_action[2]) * self.Z_STEP
+        dyaw = float(self.smoothed_action[3]) * self.MAX_YAW_RATE
 
         cos_yaw = math.cos(self.drone_yaw)
         sin_yaw = math.sin(self.drone_yaw)
-        world_dx = cos_yaw * dx - sin_yaw * dy
-        world_dy = sin_yaw * dx + cos_yaw * dy
+        world_dx = cos_yaw * dx_step - sin_yaw * dy_step
+        world_dy = sin_yaw * dx_step + cos_yaw * dy_step
 
         wp_x = self.drone_x + world_dx
         wp_y = self.drone_y + world_dy

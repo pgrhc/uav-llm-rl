@@ -1,0 +1,527 @@
+[
+ {
+  "episode": 0,
+  "stage": 1,
+  "timestep": 1,
+  "positions": [
+   [
+    0.4865028674377101,
+    1.7154747695329076,
+    1.0238003738276529
+   ]
+  ],
+  "rewards": [
+   -52.93329620361328
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -52.93329620361328,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 1,
+  "stage": 1,
+  "timestep": 2,
+  "positions": [
+   [
+    2.035347412266612,
+    2.7410614872528556,
+    -0.29842153765400964
+   ]
+  ],
+  "rewards": [
+   -53.86870574951172
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.86870574951172,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 2,
+  "stage": 1,
+  "timestep": 3,
+  "positions": [
+   [
+    1.9083331837342485,
+    2.1419528592845536,
+    -1.2432677784026132
+   ]
+  ],
+  "rewards": [
+   -53.871063232421875
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.871063232421875,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 3,
+  "stage": 1,
+  "timestep": 4,
+  "positions": [
+   [
+    0.7296895011631224,
+    0.8095551575523422,
+    -1.5191849901744934
+   ]
+  ],
+  "rewards": [
+   -53.86699676513672
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.86699676513672,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 4,
+  "stage": 1,
+  "timestep": 5,
+  "positions": [
+   [
+    0.059640509394887645,
+    0.057682690995540103,
+    -1.6919917346167617
+   ]
+  ],
+  "rewards": [
+   -53.889495849609375
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.889495849609375,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 5,
+  "stage": 1,
+  "timestep": 6,
+  "positions": [
+   [
+    -0.06160248641877763,
+    -0.09580485211631228,
+    -1.7966191769862303
+   ]
+  ],
+  "rewards": [
+   -53.88731002807617
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.88731002807617,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 6,
+  "stage": 1,
+  "timestep": 7,
+  "positions": [
+   [
+    -0.0639371347903142,
+    -0.038968597800629494,
+    -1.6776204660676668
+   ]
+  ],
+  "rewards": [
+   -53.84211730957031
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.84211730957031,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 7,
+  "stage": 1,
+  "timestep": 8,
+  "positions": [
+   [
+    -0.02571530052865049,
+    0.022364810608002186,
+    -1.6218124990272753
+   ]
+  ],
+  "rewards": [
+   -53.83257293701172
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.83257293701172,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 8,
+  "stage": 1,
+  "timestep": 9,
+  "positions": [
+   [
+    0.05617262016514601,
+    0.06232687595469868,
+    -1.6692496029958617
+   ]
+  ],
+  "rewards": [
+   -53.86168670654297
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.86168670654297,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 9,
+  "stage": 1,
+  "timestep": 10,
+  "positions": [
+   [
+    0.03874096668688499,
+    0.02139937570197998,
+    -1.7757574436617638
+   ]
+  ],
+  "rewards": [
+   -53.864288330078125
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.864288330078125,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 10,
+  "stage": 1,
+  "timestep": 11,
+  "positions": [
+   [
+    -0.007230010192278031,
+    -0.013272016571626176,
+    -2.129463793959088
+   ]
+  ],
+  "rewards": [
+   -53.8865966796875
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.8865966796875,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 11,
+  "stage": 1,
+  "timestep": 12,
+  "positions": [
+   [
+    0.0018160220879622072,
+    0.003720770454796818,
+    -2.129849548721915
+   ]
+  ],
+  "rewards": [
+   -53.834712982177734
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.834712982177734,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 12,
+  "stage": 1,
+  "timestep": 13,
+  "positions": [
+   [
+    0.02201815194768205,
+    -0.011433092812791212,
+    -2.086078410167849
+   ]
+  ],
+  "rewards": [
+   -53.87678909301758
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.87678909301758,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 13,
+  "stage": 1,
+  "timestep": 14,
+  "positions": [
+   [
+    0.02479880535600621,
+    -0.009866661514754186,
+    -2.0195093405754863
+   ]
+  ],
+  "rewards": [
+   -53.86141586303711
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.86141586303711,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 14,
+  "stage": 1,
+  "timestep": 15,
+  "positions": [
+   [
+    0.021493703747953844,
+    0.002899887645927403,
+    -1.964400070743024
+   ]
+  ],
+  "rewards": [
+   -53.89363098144531
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.89363098144531,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 15,
+  "stage": 1,
+  "timestep": 16,
+  "positions": [
+   [
+    0.0182653946325024,
+    0.027168027711019397,
+    -1.9256981638080566
+   ]
+  ],
+  "rewards": [
+   -53.863956451416016
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.863956451416016,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 16,
+  "stage": 1,
+  "timestep": 17,
+  "positions": [
+   [
+    0.028643778183925845,
+    0.019635078051004343,
+    -2.2210085376677497
+   ]
+  ],
+  "rewards": [
+   -53.89590835571289
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.89590835571289,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 17,
+  "stage": 1,
+  "timestep": 18,
+  "positions": [
+   [
+    0.004633983283445223,
+    0.0009742418992041638,
+    -2.1135446272078253
+   ]
+  ],
+  "rewards": [
+   -53.89325714111328
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.89325714111328,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 18,
+  "stage": 1,
+  "timestep": 19,
+  "positions": [
+   [
+    0.006297730987797713,
+    -0.023587973436227535,
+    -2.056246248042375
+   ]
+  ],
+  "rewards": [
+   -53.886871337890625
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.886871337890625,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 19,
+  "stage": 1,
+  "timestep": 20,
+  "positions": [
+   [
+    0.02616060837888441,
+    -0.01739700709523711,
+    -1.8791568679338524
+   ]
+  ],
+  "rewards": [
+   -53.85590362548828
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.85590362548828,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 20,
+  "stage": 1,
+  "timestep": 21,
+  "positions": [
+   [
+    0.04340220429398892,
+    -0.004185330349111995,
+    -1.7823452318976745
+   ]
+  ],
+  "rewards": [
+   -53.884281158447266
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.884281158447266,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 21,
+  "stage": 1,
+  "timestep": 22,
+  "positions": [
+   [
+    0.02624510372865038,
+    0.014120948908115515,
+    -1.8385172070313829
+   ]
+  ],
+  "rewards": [
+   -53.86851119995117
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.86851119995117,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 22,
+  "stage": 1,
+  "timestep": 23,
+  "positions": [
+   [
+    0.025565537406987082,
+    0.00889343523645976,
+    -1.8580952720111608
+   ]
+  ],
+  "rewards": [
+   -53.883609771728516
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.883609771728516,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 23,
+  "stage": 1,
+  "timestep": 24,
+  "positions": [
+   [
+    0.010166020054225846,
+    0.00420056551403602,
+    -1.903050507424327
+   ]
+  ],
+  "rewards": [
+   -53.88051986694336
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.88051986694336,
+  "length": 1,
+  "outcome": "unknown"
+ },
+ {
+  "episode": 24,
+  "stage": 1,
+  "timestep": 25,
+  "positions": [
+   [
+    0.017340780378737812,
+    0.0041029370693454375,
+    -1.8833206416818458
+   ]
+  ],
+  "rewards": [
+   -53.885257720947266
+  ],
+  "action_stds": [
+   1.0
+  ],
+  "total_reward": -53.885257720947266,
+  "length": 1,
+  "outcome": "unknown"
+ }
+]

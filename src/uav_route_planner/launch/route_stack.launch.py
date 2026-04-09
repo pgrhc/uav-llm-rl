@@ -33,11 +33,7 @@ def generate_launch_description():
                 default_value="true",
                 description="false: sadece costmap_patch + route_safety_filter",
             ),
-            Node(
-                package="uav_route_planner",
-                executable="costmap_patch_node",
-                name="costmap_patch_node",
-            ),
+
             Node(
                 package="uav_route_planner",
                 executable="route_safety_filter_node",

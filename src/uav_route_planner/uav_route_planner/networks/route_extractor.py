@@ -6,7 +6,7 @@ Uses only deployable keys: costmap_patch, threat_vector, threat_scores, goal_sta
 Ignores 'privileged' if present in observations (for Actor; Critic adds it separately).
 
 Architecture:
-    costmap_patch (1,64,64) → CNN  → map_embedding   (128)
+    lidar_vector  (36,)      → MLP  → map_embedding    (128)
     threat_vector (74,)      → MLP  → threat_embedding (64)
     threat_scores (5,)       → MLP  → score_embedding  (16)
     goal_state    (7,)       → MLP  → goal_embedding   (32)
@@ -35,21 +35,9 @@ class RouteCombinedExtractor(BaseFeaturesExtractor):
         fd = features_dim if features_dim is not None else self.DEPLOY_DIM
         super().__init__(observation_space, features_dim=fd)
 
-        # CNN for costmap_patch (1, 64, 64) — output size computed dynamically
-        self.cnn = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=5, stride=2, padding=2),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(),
-            nn.Flatten(),
-        )
-        with torch.no_grad():
-            dummy = torch.zeros(1, *observation_space["costmap_patch"].shape)
-            conv_out = self.cnn(dummy).shape[1]
-        self.cnn_fc = nn.Sequential(
-            nn.Linear(conv_out, 128),
+        # MLP for lidar_vector (36,)
+        self.lidar_mlp = nn.Sequential(
+            nn.Linear(36, 128),
             nn.ReLU(),
         )
 
@@ -85,13 +73,13 @@ class RouteCombinedExtractor(BaseFeaturesExtractor):
 
     def forward(self, observations: dict) -> torch.Tensor:
         """Extract deployable features only. Ignores 'privileged' if present."""
-        costmap = observations["costmap_patch"]
+        lidar = observations["lidar_vector"]
         threat = observations["threat_vector"]
         scores = observations["threat_scores"]
         goal = observations["goal_state"]
         path = observations["a_star_path"]
 
-        map_emb = self.cnn_fc(self.cnn(costmap))      # (B, 128)
+        map_emb = self.lidar_mlp(lidar)                # (B, 128)
         threat_emb = self.threat_mlp(threat)           # (B, 64)
         score_emb = self.scores_mlp(scores)            # (B, 16)
         goal_emb = self.goal_mlp(goal)                 # (B, 32)

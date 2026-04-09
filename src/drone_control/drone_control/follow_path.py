@@ -51,7 +51,7 @@ MAX_YAW_RATE = 0.6
 CLOSEST_SEARCH_WINDOW = 50
 PATH_RESET_DIST = 1.0
 
-ROUTE_WP_TIMEOUT = 2.0
+ROUTE_WP_TIMEOUT = 0.3
 
 
 
@@ -98,7 +98,7 @@ class OffboardControl(Node):
         
         # EKLENEN: Vehicle status subscriber
         self.vehicle_status_sub = self.create_subscription(
-            VehicleStatus, '/fmu/out/vehicle_status', self.vehicle_status_callback, qos_px4)
+            VehicleStatus, '/fmu/out/vehicle_status_v1', self.vehicle_status_callback, qos_px4)
 
         self.offboard_setpoint_counter = 0
         self.current_path = []
@@ -142,11 +142,24 @@ class OffboardControl(Node):
         self.nav_state = msg.nav_state
 
     def odom_callback(self, msg):
-        self.current_pos_enu = [
-            msg.pose.pose.position.x,
-            msg.pose.pose.position.y,
-            msg.pose.pose.position.z
-        ]
+        new_x = msg.pose.pose.position.x
+        new_y = msg.pose.pose.position.y
+        new_z = msg.pose.pose.position.z
+
+        # DETECT TELEPORTATION
+        if hasattr(self, '_first_odom_received') and self._first_odom_received:
+            dist_jump = math.hypot(new_x - self.current_pos_enu[0], new_y - self.current_pos_enu[1])
+            if dist_jump > 2.0:
+                self.get_logger().warn(f"🚀 Teleport detected ({dist_jump:.1f}m jump)! Clearing controller state.")
+                self.current_path = []
+                self.sp_n = None
+                self.sp_e = None
+                self.path_index = 0
+                self.route_wp = None
+                self.route_wp_stamp = 0.0
+
+        self.current_pos_enu = [new_x, new_y, new_z]
+        self._first_odom_received = True
 
         q = msg.pose.pose.orientation
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
@@ -156,6 +169,7 @@ class OffboardControl(Node):
     def route_wp_callback(self, msg: PoseStamped):
         """Route agent'ın ürettiği tek waypoint'i al."""
         self.route_wp = msg.pose
+        self.route_wp_frame_id = msg.header.frame_id
         self.route_wp_stamp = self.get_clock().now().nanoseconds * 1e-9
 
     def path_callback(self, msg):
@@ -378,40 +392,43 @@ class OffboardControl(Node):
     def publish_trajectory_setpoint(self):
         msg = TrajectorySetpoint()
 
-        # Route RL: doğrudan hedef (alpha/max_speed yok). Tehdit sadece /plan kullanıyorsa buraya girmez.
+        target_enu, yaw_error = self.get_adaptive_lookahead_point()
+
+        target_north = None
+        target_east = None
+        target_down = self.mission_altitude
+        forced_yaw_ned = None
+
         if self._has_active_route_wp():
-            target_enu = self.route_wp.position
+            t_enu = self.route_wp.position
             q = self.route_wp.orientation
-            wp_yaw = math.atan2(
+            wp_yaw_enu = math.atan2(
                 2.0 * (q.w * q.z + q.x * q.y),
                 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
             )
 
-            t_north = target_enu.y
-            t_east = target_enu.x
-            t_down = -target_enu.z if target_enu.z > 0.0 else self.mission_altitude
+            is_residual = getattr(self, "route_wp_frame_id", "") == "residual"
 
-            self.sp_n = t_north
-            self.sp_e = t_east
+            if is_residual and target_enu is not None:
+                # Target is actual continuous A* lookahead (1.5m ahead) PLUS the RL bias offset!
+                target_north = target_enu.y + t_enu.y
+                target_east = target_enu.x + t_enu.x
+                # Don't touch target_down; let it fallback to mission_altitude 
+            else:
+                target_north = t_enu.y
+                target_east = t_enu.x
+                target_down = -t_enu.z if t_enu.z > 0.0 else self.mission_altitude
+            
+            # Convert ENU yaw to NED yaw (NED = pi/2 - ENU)
+            forced_yaw_ned = math.atan2(math.sin(math.pi/2.0 - wp_yaw_enu), math.cos(math.pi/2.0 - wp_yaw_enu))
+            yaw_error = 0.0  # Disable local pure-pursuit turn constraints for RL target
 
-            msg.position = [t_north, t_east, t_down]
-            msg.velocity = [float('nan'), float('nan'), float('nan')]
-            msg.yaw = math.atan2(
-                math.sin(wp_yaw), math.cos(wp_yaw)
-            )
-            self.last_valid_yaw = msg.yaw
-
-            msg.timestamp = self.get_clock().now().nanoseconds // 1000
-            self.trajectory_setpoint_pub.publish(msg)
-            return
-
-        target_enu, yaw_error = self.get_adaptive_lookahead_point()
-
-        if target_enu is not None:
+        elif target_enu is not None:
             target_north = target_enu.y
             target_east = target_enu.x
             target_down = self.mission_altitude
 
+        if target_north is not None and target_east is not None:
             curr_north = self.current_pos_enu[1]
             curr_east = self.current_pos_enu[0]
 
@@ -441,33 +458,35 @@ class OffboardControl(Node):
             msg.position = [self.sp_n, self.sp_e, target_down]
             msg.velocity = [float('nan'), float('nan'), float('nan')]
 
-            if dist_to_target > NEAR_TARGET_DIST:
-                desired_yaw_ned = math.atan2(delta_east, delta_north)
-
-                yaw_err = math.atan2(
-                    math.sin(desired_yaw_ned - self.last_valid_yaw),
-                    math.cos(desired_yaw_ned - self.last_valid_yaw)
-                )
-
-                if abs(yaw_err) < YAW_ERR_DEADBAND and (yaw_error <= TURN_THRESHOLD):
-                    msg.yaw = self.last_valid_yaw
-                    if hasattr(msg, "yaw_speed"):
-                        msg.yaw_speed = 0.0
-                else:
-                    msg.yaw = desired_yaw_ned
-                    self.last_valid_yaw = desired_yaw_ned
-
-                    if hasattr(msg, "yaw_speed"):
-                        req_rate = yaw_err / max(TIMER_PERIOD, 1e-3)
-                        if req_rate > MAX_YAW_RATE:
-                            req_rate = MAX_YAW_RATE
-                        if req_rate < -MAX_YAW_RATE:
-                            req_rate = -MAX_YAW_RATE
-                        msg.yaw_speed = req_rate
+            if forced_yaw_ned is not None:
+                desired_yaw_ned = forced_yaw_ned
             else:
+                # Disable direction locking if strictly hitting the close RL target, to prevent erratic spins
+                if dist_to_target > NEAR_TARGET_DIST:
+                    desired_yaw_ned = math.atan2(delta_east, delta_north)
+                else:
+                    desired_yaw_ned = self.last_valid_yaw
+
+            yaw_err = math.atan2(
+                math.sin(desired_yaw_ned - self.last_valid_yaw),
+                math.cos(desired_yaw_ned - self.last_valid_yaw)
+            )
+
+            if abs(yaw_err) < YAW_ERR_DEADBAND and (yaw_error <= TURN_THRESHOLD):
                 msg.yaw = self.last_valid_yaw
                 if hasattr(msg, "yaw_speed"):
                     msg.yaw_speed = 0.0
+            else:
+                msg.yaw = desired_yaw_ned
+                self.last_valid_yaw = desired_yaw_ned
+
+                if hasattr(msg, "yaw_speed"):
+                    req_rate = yaw_err / max(TIMER_PERIOD, 1e-3)
+                    if req_rate > MAX_YAW_RATE:
+                        req_rate = MAX_YAW_RATE
+                    if req_rate < -MAX_YAW_RATE:
+                        req_rate = -MAX_YAW_RATE
+                    msg.yaw_speed = req_rate
 
             if self.offboard_setpoint_counter % 20 == 0 and self.initialization_complete:
                 mode_str = "SHORT (Viraj)" if self.in_turn_mode else "LONG (Düz)"

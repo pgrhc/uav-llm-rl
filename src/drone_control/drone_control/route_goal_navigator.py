@@ -22,90 +22,41 @@ import json
 import os
 import threading
 
-# Curriculum maze sabitleri (maze_curriculum_world ile uyumlu)
-ROWS, COLS = 15, 15
+# Curriculum maze sabitleri (maze_curriculum_manager ile uyumlu)
+ROWS, COLS = 20, 20
 CELL_SIZE = 5.0
 DRONE_SPAWN_CELL = (ROWS // 2, COLS // 2)
-WALLS_DIR = "/home/ubuntu/Desktop"
-STAGE_ORIGINS = {
-    1: (0.0, 0.0),
-    2: (1000.0, 0.0),
-    3: (2000.0, 0.0),
-}
-WALLS_PATHS = {
-    1: os.path.join(WALLS_DIR, "maze_walls_stage1.json"),
-    2: os.path.join(WALLS_DIR, "maze_walls_stage2.json"),
-    3: os.path.join(WALLS_DIR, "maze_walls_stage3.json"),
-}
+WALLS_PATH = "/home/ubuntu/Desktop/maze_walls.json"
+ORIGIN = (0.0, 0.0)
 
-# Birlesik maze
-UNIFIED_MAZE = True
-UNIFIED_ROWS, UNIFIED_COLS = 15, 45
-UNIFIED_ORIGIN = (0.0, 0.0)
-UNIFIED_SPAWN_CELL = (7, 7)
-WALLS_UNIFIED_PATH = os.path.join(WALLS_DIR, "maze_walls_unified.json")
-SECTION1_X_MAX = 50.0
-SECTION2_X_MAX = 125.0
-
-
-def _maze_origin(stage_origin):
+def _maze_origin():
     sr, sc = DRONE_SPAWN_CELL
-    ox = stage_origin[0] - (sc + 0.5) * CELL_SIZE
-    oy = stage_origin[1] - (sr + 0.5) * CELL_SIZE
+    ox = ORIGIN[0] - (sc + 0.5) * CELL_SIZE
+    oy = ORIGIN[1] - (sr + 0.5) * CELL_SIZE
     return ox, oy
 
 
-def _maze_origin_unified():
-    sr, sc = UNIFIED_SPAWN_CELL
-    ox = UNIFIED_ORIGIN[0] - (sc + 0.5) * CELL_SIZE
-    oy = UNIFIED_ORIGIN[1] - (sr + 0.5) * CELL_SIZE
-    return ox, oy
-
-
-def _load_walls(path):
-    with open(path) as f:
+def _load_walls():
+    if not os.path.exists(WALLS_PATH):
+        return [[{"N": True, "E": True, "S": True, "W": True} for _ in range(COLS)] for _ in range(ROWS)]
+    with open(WALLS_PATH) as f:
         return json.load(f)
-
-
-def _stage_from_x(x):
-    if x < SECTION1_X_MAX:
-        return 1
-    if x < SECTION2_X_MAX:
-        return 2
-    return 3
-
 
 ARRIVAL_DIST = 1.5
 GOAL_Z = 1.5
 DIRS_RC = {"N": (-1, 0), "S": (1, 0), "E": (0, 1), "W": (0, -1)}
 
-
-def _cell_to_world(r, c, stage_origin):
-    ox, oy = _maze_origin(stage_origin)
+def _cell_to_world(r, c):
+    ox, oy = _maze_origin()
     x = ox + (c + 0.5) * CELL_SIZE
     y = oy + (r + 0.5) * CELL_SIZE
     return x, y
 
-
-def _cell_to_world_unified(r, c):
-    ox, oy = _maze_origin_unified()
-    x = ox + (c + 0.5) * CELL_SIZE
-    y = oy + (r + 0.5) * CELL_SIZE
-    return x, y
-
-
-def _world_to_cell(x, y, stage_origin):
-    ox, oy = _maze_origin(stage_origin)
+def _world_to_cell(x, y):
+    ox, oy = _maze_origin()
     c = int((x - ox) / CELL_SIZE)
     r = int((y - oy) / CELL_SIZE)
     return max(0, min(ROWS - 1, r)), max(0, min(COLS - 1, c))
-
-
-def _world_to_cell_unified(x, y):
-    ox, oy = _maze_origin_unified()
-    c = int((x - ox) / CELL_SIZE)
-    r = int((y - oy) / CELL_SIZE)
-    return max(0, min(UNIFIED_ROWS - 1, r)), max(0, min(UNIFIED_COLS - 1, c))
 
 
 def astar(walls, start, goal, rows, cols):
@@ -146,13 +97,11 @@ class RouteGoalNavigator(Node):
     def __init__(self):
         super().__init__("route_goal_navigator")
 
-        self.unified = UNIFIED_MAZE
         self.current_stage = 1
-        self._stage_origin = UNIFIED_ORIGIN if self.unified else STAGE_ORIGINS[self.current_stage]
-        self.walls = self._load_walls_impl()
-        self._rows = UNIFIED_ROWS if self.unified else ROWS
-        self._cols = UNIFIED_COLS if self.unified else COLS
-        self._spawn_cell = UNIFIED_SPAWN_CELL if self.unified else DRONE_SPAWN_CELL
+        self.walls = _load_walls()
+        self._rows = ROWS
+        self._cols = COLS
+        self._spawn_cell = DRONE_SPAWN_CELL
 
         qos_path = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -190,8 +139,7 @@ class RouteGoalNavigator(Node):
         self._unvisited_cache = None
 
         self.get_logger().info(
-            f"RouteGoalNavigator baslatildi | Unified={self.unified} | "
-            f"Stage {self.current_stage} | Origin {self._stage_origin}"
+            f"RouteGoalNavigator baslatildi | Stage {self.current_stage} | Origin 0.0"
         )
 
         self.timer = self.create_timer(0.5, self._loop)
@@ -199,32 +147,13 @@ class RouteGoalNavigator(Node):
     # ------------------------------------------------------------------ #
     # Stage management
     # ------------------------------------------------------------------ #
-    def _load_walls_impl(self):
-        if self.unified:
-            path = WALLS_UNIFIED_PATH
-        else:
-            path = WALLS_PATHS.get(self.current_stage)
-        if path and os.path.exists(path):
-            return _load_walls(path)
-        self.get_logger().warn(f"walls.json bulunamadi: {path}")
-        cols = UNIFIED_COLS if self.unified else COLS
-        rows = UNIFIED_ROWS if self.unified else ROWS
-        return [[{"N": True, "E": True, "S": True, "W": True}
-                 for _ in range(cols)] for _ in range(rows)]
-
     def _cb_set_stage(self, msg: Int32):
-        if self.unified:
-            return  # Birlesik maze: stage pozisyondan
         new_stage = msg.data
         if new_stage == self.current_stage:
             return
-        if new_stage not in STAGE_ORIGINS:
-            self.get_logger().warn(f"Gecersiz stage: {new_stage}")
-            return
 
         self.current_stage = new_stage
-        self._stage_origin = STAGE_ORIGINS[new_stage]
-        self.walls = self._load_walls_impl()
+        self.walls = _load_walls()
 
         self.visited.clear()
         self.visited.add(self._spawn_cell)
@@ -234,7 +163,7 @@ class RouteGoalNavigator(Node):
         self.current_path_cells = []
 
         self.get_logger().info(
-            f"Stage degisti → {new_stage} | Origin {self._stage_origin}"
+            f"Stage degisti → {new_stage} | Origin 0.0"
         )
 
     # ------------------------------------------------------------------ #
@@ -247,11 +176,7 @@ class RouteGoalNavigator(Node):
             self.pos[2] = msg.pose.pose.position.z
             x, y = self.pos[0], self.pos[1]
         self.odom_ok = True
-        if self.unified:
-            self.current_stage = _stage_from_x(x)
-            cell = _world_to_cell_unified(x, y)
-        else:
-            cell = _world_to_cell(x, y, self._stage_origin)
+        cell = _world_to_cell(x, y)
         self.visited.add(cell)
         self._unvisited_cache = None
 
@@ -264,17 +189,11 @@ class RouteGoalNavigator(Node):
 
         with self._pos_lock:
             x, y = self.pos[0], self.pos[1]
-        if self.unified:
-            curr_cell = _world_to_cell_unified(x, y)
-        else:
-            curr_cell = _world_to_cell(x, y, self._stage_origin)
+        curr_cell = _world_to_cell(x, y)
 
         goal_cell = self.goal_cell
         if self.navigating and goal_cell:
-            if self.unified:
-                gx, gy = _cell_to_world_unified(*goal_cell)
-            else:
-                gx, gy = _cell_to_world(*goal_cell, self._stage_origin)
+            gx, gy = _cell_to_world(*goal_cell)
             dist = math.hypot(x - gx, y - gy)
             if dist < ARRIVAL_DIST:
                 self.get_logger().info(
@@ -360,10 +279,7 @@ class RouteGoalNavigator(Node):
         msg.header.frame_id = "map"
 
         for r, c in path_cells:
-            if self.unified:
-                wx, wy = _cell_to_world_unified(r, c)
-            else:
-                wx, wy = _cell_to_world(r, c, self._stage_origin)
+            wx, wy = _cell_to_world(r, c)
             pose = PoseStamped()
             pose.header = msg.header
             pose.pose.position.x = wx
@@ -376,10 +292,7 @@ class RouteGoalNavigator(Node):
 
     def _publish_goal(self, goal_cell):
         r, c = goal_cell
-        if self.unified:
-            x, y = _cell_to_world_unified(r, c)
-        else:
-            x, y = _cell_to_world(r, c, self._stage_origin)
+        x, y = _cell_to_world(r, c)
         msg = PoseStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "map"

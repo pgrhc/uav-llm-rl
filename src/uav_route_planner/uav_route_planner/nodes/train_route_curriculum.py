@@ -61,7 +61,7 @@ except ImportError:
 import gymnasium as gym
 import rclpy
 
-from stable_baselines3 import SAC
+from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, CallbackList
 from stable_baselines3.common.monitor import Monitor
@@ -200,9 +200,9 @@ class CurriculumScheduler(BaseCallback):
     @staticmethod
     def default_stage_ranges():
         """ROUTE_TOTAL_TIMESTEPS, ROUTE_STAGE1_END, ROUTE_STAGE2_END ile yapılandırılır."""
-        t = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "300000"))
-        s1 = int(os.environ.get("ROUTE_STAGE1_END", "75000"))
-        s2 = int(os.environ.get("ROUTE_STAGE2_END", "175000"))
+        t = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "204800"))
+        s1 = int(os.environ.get("ROUTE_STAGE1_END", "70000"))
+        s2 = int(os.environ.get("ROUTE_STAGE2_END", "140000"))
         s1 = max(0, min(s1, t))
         s2 = max(s1, min(s2, t))
         return {1: (0, s1), 2: (s1, s2), 3: (s2, t)}
@@ -795,7 +795,7 @@ class PlotSaverCallback(_RouteEpisodeMetricsMixin, BaseCallback):
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
-TOTAL_TIMESTEPS = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "300000"))
+TOTAL_TIMESTEPS = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "204800"))
 
 
 def main(args=None):
@@ -882,38 +882,40 @@ def main(args=None):
             [_route_curriculum_subproc_env_fn(log_dir, 0)],
             start_method="spawn",
         )
+    HYPERPARAMS = {
+        "learning_rate": 3e-4,
+        "n_steps":       2048,
+        "batch_size":    256,
+        "n_epochs":      10,
+        "gamma":         0.99,
+        "gae_lambda":    0.95,
+        "clip_range":    0.2,
+        "ent_coef":      0.01,
+        "vf_coef":       0.5,
+        "max_grad_norm": 0.5,
+    }
+
     env = VecNormalize(
         vec_env,
         norm_obs=True,
-        norm_reward=True,
+        norm_reward=False,
         clip_obs=10.0,
-        clip_reward=10.0,
-        gamma=0.99,
+        clip_reward=5.0,
+        gamma=HYPERPARAMS["gamma"],
     )
     _env = env
 
-    # --- Model (SAC + Asymmetric Policy) ---
-    from uav_route_planner.networks.route_asymmetric_policy import RouteAsymmetricSACPolicy
+    from uav_route_planner.networks.route_extractor import RouteCombinedExtractor
 
-    _ls = int(os.environ.get("ROUTE_LEARNING_STARTS", "5000"))
-    _rscale = float(os.environ.get("ROUTE_RANDOM_PHASE_ACTION_SCALE", "1.0"))
-
-    model = SAC(
-        RouteAsymmetricSACPolicy,
+    model = PPO(
+        "MultiInputPolicy",
         env,
         verbose=1,
         tensorboard_log=log_dir,
-        learning_rate=3e-4,
-        buffer_size=100_000,
-        learning_starts=_ls,
-        batch_size=256,
-        tau=0.005,
-        gamma=0.99,
-        train_freq=1,
-        gradient_steps=1,
+        **HYPERPARAMS,
         policy_kwargs=dict(
-            pi_arch=[256, 256, 128],
-            vf_arch=[256, 256, 128],
+            features_extractor_class=RouteCombinedExtractor,
+            net_arch=dict(pi=[256, 256, 128], vf=[256, 256, 128]),
         ),
     )
     _model = model
@@ -968,31 +970,13 @@ def main(args=None):
         plot_saver,
     ])
 
-    # --- Train ---
     print("", flush=True)
     print("!" * 60, flush=True)
-    print("SAC BASLANGIC NOTU (kok neden analizi)", flush=True)
+    print("PPO BASLANGIC NOTU (On-Policy Transition)", flush=True)
     print(
-        f"  learning_starts={_ls}  →  bu adim sayisina KADAR politika EGITILMEZ; "
-        "SB3 rastgele aksiyon toplar.",
+        f"  Total Timesteps: {TOTAL_TIMESTEPS} | Stage 1 End: 70k | Stage 2 End: 140k",
         flush=True,
     )
-    print(
-        "  Bu yuzden ilk binlerce adimda waypoint'ler 'anlamsiz' gorunebilir; "
-        "drone da PX4/EKF gecikmesiyle sarsilir.",
-        flush=True,
-    )
-    if _rscale < 1.0 - 1e-9:
-        print(
-            f"  ROUTE_RANDOM_PHASE_ACTION_SCALE={_rscale}  →  random fazda "
-            "env aksiyonu bu faktorle kucultulur (daha yumusak waypoint).",
-            flush=True,
-        )
-    else:
-        print(
-            "  Random fazda yumusatma icin: export ROUTE_RANDOM_PHASE_ACTION_SCALE=0.25",
-            flush=True,
-        )
     _step_m = float(os.environ.get("ROUTE_STEP_SIZE", "0.3"))
     print(
         f"  ROUTE_STEP_SIZE={_step_m} m  (xy residual; yumusak: 0.2, varsayilan 0.3)",
@@ -1000,7 +984,7 @@ def main(args=None):
     )
     print("!" * 60, flush=True)
     print(
-        "\nEgitim basliyor... (ROUTE_LEARNING_STARTS / ROUTE_RANDOM_PHASE_ACTION_SCALE / ROUTE_STEP_SIZE)\n",
+        "\nEgitim basliyor... (Symmetric PPO)\n",
         flush=True,
     )
 

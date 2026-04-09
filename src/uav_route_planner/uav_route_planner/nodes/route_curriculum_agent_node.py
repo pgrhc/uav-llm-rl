@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Route Curriculum Agent Inference Node (SAC + Asymmetric Policy)
+Route Curriculum Agent Inference Node (Symmetric PPO)
 
-Loads trained SAC model (RouteAsymmetricSACPolicy) + VecNormalize.
+Loads trained PPO model + VecNormalize.
 Uses RouteCurriculumAgent-v0 env.
 
 Input/Output: Same as route_agent_node
@@ -11,7 +11,7 @@ Input/Output: Same as route_agent_node
 import numpy as np
 import gymnasium as gym
 import uav_route_planner.envs  # noqa: F401 — triggers register
-from stable_baselines3 import SAC
+from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 import rclpy
@@ -45,7 +45,7 @@ def main(args=None):
         print(f"HATA: Model dosyasi bulunamadi: {model_path}")
         return
 
-    print("--- ROTA CURRICULUM AJANI (SAC) BASLATILIYOR ---")
+    print("--- ROTA CURRICULUM AJANI (PPO) BASLATILIYOR ---")
 
     vec_env = DummyVecEnv([lambda: gym.make("RouteCurriculumAgent-v0")])
 
@@ -63,12 +63,9 @@ def main(args=None):
         sys.exit(1)
 
     try:
-        from uav_route_planner.networks.route_asymmetric_policy import RouteAsymmetricSACPolicy
-
-        model = SAC.load(
+        model = PPO.load(
             model_path,
             env=env,
-            custom_objects={"policy_class": RouteAsymmetricSACPolicy},
         )
         print(f"Model yuklendi: {model_path}")
     except Exception as e:
