@@ -34,6 +34,7 @@ setup(
             "drone_navigator = drone_control.drone_navigator:main",
             "llm_control = drone_control.llm_control:main",
             "route_goal_navigator = drone_control.route_goal_navigator:main",
+            "maze_goal_scheduler = drone_control.maze_goal_scheduler:main",
         ],
     },
 )

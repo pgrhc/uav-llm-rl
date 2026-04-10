@@ -165,7 +165,7 @@ class RouteCurriculumEnv(gym.Env):
         else:
             self._stage_origin = STAGE_ORIGINS[curriculum_stage]
         self._spawn_z = 1.5
-
+        self._last_plan_time = 0.0
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(4,), dtype=np.float32
         )
@@ -363,6 +363,7 @@ class RouteCurriculumEnv(gym.Env):
 
     def _cb_plan(self, msg: Path):
         poses = [(p.pose.position.x, p.pose.position.y) for p in msg.poses]
+        self._last_plan_time = time.time()
         with self.cond:
             self.a_star_poses = poses
 
@@ -383,10 +384,11 @@ class RouteCurriculumEnv(gym.Env):
                 odom_age = time.time() - self._last_odom_time
                 odom_after_reset = self._last_odom_time >= self._reset_wall_time
                 odom_fresh = odom_age < 0.35 and odom_after_reset
+                plan_after_reset = self._last_plan_time >= self._reset_wall_time
                 threat_ok = self.new_threat
                 if step_mode and not threat_ok:
                     threat_ok = (time.time() - self._last_threat_wall_time) < threat_grace_sec
-                if threat_ok and odom_fresh:
+                if threat_ok and odom_fresh and plan_after_reset:
                     self.new_threat = False
                     return True
                 remaining = end - time.time()
@@ -403,6 +405,9 @@ class RouteCurriculumEnv(gym.Env):
             missing.append("/odometry/filtered (reset/teleport sonrası yeni mesaj gelmedi)")
         elif odom_age >= 0.35:
             missing.append(f"/odometry/filtered (son: {odom_age:.2f}s önce — kopuk olabilir)")
+        if self._last_plan_time < self._reset_wall_time:
+            missing.append("/plan (reset sonrası yeni plan gelmedi)")
+
         self.node.get_logger().warn(
             f"Obs timeout ({timeout:.1f}s): eksik: {', '.join(missing)}"
         )
@@ -502,20 +507,21 @@ class RouteCurriculumEnv(gym.Env):
             lidar_vec = self.threat_vector[self.LIDAR_START_IDX : self.LIDAR_END_IDX].copy()
             threat_vec = self.threat_vector.copy()
             threat_sc = self.threat_scores.copy()
-        return {
-            "lidar_vector": lidar_vec,
-            "threat_vector": threat_vec,
-            "threat_scores": np.clip(threat_sc, 0.0, 1.0),
-            "goal_state": self._build_goal_state(),
-            "a_star_path": self._build_a_star_obs(),
+        obs = {
+            "lidar_vector": np.nan_to_num(lidar_vec, nan=0.0, posinf=0.0, neginf=0.0),
+            "threat_vector": np.nan_to_num(threat_vec, nan=0.0, posinf=0.0, neginf=0.0),
+            "threat_scores": np.nan_to_num(np.clip(threat_sc, 0.0, 1.0), nan=0.0, posinf=0.0, neginf=0.0),
+            "goal_state": np.nan_to_num(self._build_goal_state(), nan=0.0, posinf=0.0, neginf=0.0),
+            "a_star_path": np.nan_to_num(self._build_a_star_obs(), nan=0.0, posinf=0.0, neginf=0.0),
         }
+        return obs
 
     def _dist_to_goal(self) -> float:
         with self.cond:
             gx, gy = self.goal_x, self.goal_y
             dx, dy = self.drone_x, self.drone_y
-        if gx is None:
-            return float("inf")
+        if gx is None or gy is None:
+            return self.MAX_GOAL_DIST  
         return math.sqrt((gx - dx) ** 2 + (gy - dy) ** 2)
 
     def _dist_to_nearest_astar_wp(self) -> float:
@@ -535,13 +541,20 @@ class RouteCurriculumEnv(gym.Env):
     # Collision detection
     # ------------------------------------------------------------------ #
     def _check_collision(self, wp_x: float, wp_y: float) -> bool:
-        if self._check_lidar_collision():
+        with self.cond:
+            dx, dy = self.drone_x, self.drone_y
+
+        if self._check_costmap_collision(wp_x, wp_y):
+            return True
+        if self._check_costmap_collision(dx, dy):
             return True
         if self._check_lidar_collision():
             return True
+
         stage = self._stage_from_position(self.drone_x) if self.unified_maze else self.curriculum_stage
         if stage == 3 and self._check_actor_collision():
             return True
+
         return False
 
     def _check_costmap_collision(self, x: float, y: float) -> bool:
@@ -656,34 +669,26 @@ class RouteCurriculumEnv(gym.Env):
             self.new_threat = False
             self.new_odom = False
 
-        self._soft_reset_drone()
-        # Teleport + stabilize bittikten sonra: bundan sonra gelen odom gerekli (_last_odom_time sıfırlanmaz)
+        # self._soft_reset_drone() # Kullanıcı talebi üzerine tamamen kaldırıldı
+        self._last_episode_fatal = False
+        
         with self.cond:
             self._reset_wall_time = time.time()
-            self.a_star_poses = []  # Clear old plan memory
 
         obs_ok = False
-        plan_ok = False
-        
-        for attempt in range(10):
+        for attempt in range(5):
             obs_ok = self._wait_obs(timeout=2.0)
-            
-            with self.cond:
-                if obs_ok and self.a_star_poses:
-                    # New plan logic: First A* point must be close to current drone position
-                    start_x, start_y = self.a_star_poses[0]
-                    dist_to_start = math.hypot(start_x - self.drone_x, start_y - self.drone_y)
-                    if dist_to_start < 3.0:
-                        plan_ok = True
-                        break
-                        
-            self.node.get_logger().warn(f"Reset sync retry {attempt + 1}/10 (obs: {obs_ok}, plan_ok: {plan_ok})")
+            if obs_ok:
+                break
+            self.node.get_logger().warn(f"Reset obs retry {attempt + 1}/5")
             time.sleep(0.5)
 
-        if not obs_ok or not plan_ok:
-            self.node.get_logger().warn("Reset sonrası obs veya yeni plan tam senkron olamadı, yine de başlanıyor.")
+        if not obs_ok:
+            self.node.get_logger().warn("Reset sonrası obs alınamadı, sıfır obs ile devam.")
 
         self.prev_dist_to_goal = self._dist_to_goal()
+        if not np.isfinite(self.prev_dist_to_goal):
+            self.prev_dist_to_goal = 0.0
         return self._get_obs(), {}
 
     def step(self, action: np.ndarray):
@@ -700,10 +705,10 @@ class RouteCurriculumEnv(gym.Env):
         )
         
         if stage_for_gate == 1:
-            current_step_size = 0.05
-            current_yaw_scale = 0.05
+            current_step_size = 0.10
+            current_yaw_scale = 0.10
             current_path_terminate = max(4.0, self.PATH_ERROR_TERMINATE_M)
-            current_path_penalty = -5.0
+            current_path_penalty = -2.0
             current_path_high_threat = 0.3
         elif stage_for_gate == 2:
             current_step_size = 0.15
@@ -775,7 +780,7 @@ class RouteCurriculumEnv(gym.Env):
             else:
                 wp_yaw = self.drone_yaw + dyaw * gate_apply
                 
-            self._publish_waypoint(world_dx, world_dy, wp_z, wp_yaw, is_residual=True)
+            self._publish_waypoint(wp_x, wp_y, wp_z, wp_yaw, is_residual=True)
         else:
             wp_x = ddx + world_dx
             wp_y = ddy + world_dy
@@ -819,10 +824,19 @@ class RouteCurriculumEnv(gym.Env):
         rw_time = -0.1
 
         # r_progress
+        rw_stall = 0.0
         if self.prev_dist_to_goal is not None and self.goal_x is not None:
             progress = self.prev_dist_to_goal - dist
-            rw_progress = 3.0 * progress
+
+            if not np.isfinite(progress):
+                progress = 0.0
+
+            rw_progress = 8.0 * progress
             reward += rw_progress
+
+            if progress < 0.01:
+                rw_stall = -0.2
+                reward += rw_stall
 
         # r_goal vs r_collision: collision takes precedence (elif)
         if self._check_collision(wp_x, wp_y):
@@ -831,6 +845,7 @@ class RouteCurriculumEnv(gym.Env):
             terminated = True
             info["collision"] = True
             self.episode_collisions += 1
+            self._last_episode_fatal = True
         elif dist < self.GOAL_TOLERANCE:
             rw_goal = 50.0
             reward += rw_goal
@@ -872,7 +887,13 @@ class RouteCurriculumEnv(gym.Env):
 
         # r_threat_proximity (adım sonrası skor; kapı hesabı yukarıda max_threat_pre ile)
         max_threat = float(np.max(self.threat_scores))
-        rw_threat = -2.0 * max_threat
+        if stage_for_gate == 1:
+            threat_penalty_scale = -0.5
+        elif stage_for_gate == 2:
+            threat_penalty_scale = -1.0
+        else:
+            threat_penalty_scale = -2.0
+        rw_threat = threat_penalty_scale * max_threat
         reward += rw_threat
 
         # r_smooth
@@ -902,6 +923,7 @@ class RouteCurriculumEnv(gym.Env):
         info["rw_goal"] = rw_goal
         info["rw_collision"] = rw_collision
         info["rw_path"] = rw_path
+        info["rw_stall"] = rw_stall
         info["rw_astar_return"] = rw_astar_return
         info["rw_path_drift"] = rw_path_drift
         info["rw_threat"] = rw_threat
@@ -909,6 +931,13 @@ class RouteCurriculumEnv(gym.Env):
         info["rw_time"] = rw_time
 
         obs = self._get_obs()
+        for k, v in obs.items():
+            if not np.all(np.isfinite(v)):
+                self.node.get_logger().warn(f"Non-finite observation in {k}, zeroing it")
+                obs[k] = np.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+        if not np.isfinite(reward):
+            self.node.get_logger().warn(f"Non-finite reward detected: {reward}, forcing to 0.0")
+            reward = 0.0
         return obs, float(reward), terminated, truncated, info
 
     def close(self):

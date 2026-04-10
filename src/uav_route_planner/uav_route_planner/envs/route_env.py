@@ -367,37 +367,21 @@ class RouteEnv(gym.Env):
         self.episode_reward = 0.0
         self.step_count = 0
 
-        self._soft_reset_drone()
+        # self._soft_reset_drone()
         
         with self.cond:
             self._reset_wall_time = time.time()
-            if hasattr(self, 'a_star_poses'):
-                self.a_star_poses = []  # Clear old plan memory
 
         obs_ok = False
-        plan_ok = False
-        
-        for attempt in range(10):
+        for attempt in range(5):
             obs_ok = self._wait_obs(timeout=2.0)
-            
-            with self.cond:
-                if obs_ok and hasattr(self, 'a_star_poses') and self.a_star_poses:
-                    # New plan logic: First A* point must be close to current drone position
-                    start_x, start_y = self.a_star_poses[0]
-                    dist_to_start = math.hypot(start_x - self.drone_x, start_y - self.drone_y)
-                    if dist_to_start < 3.0:
-                        plan_ok = True
-                        break
-                elif obs_ok and not hasattr(self, 'a_star_poses'):
-                    # If this env instance doesn't use hybrid A*, just obs is enough
-                    plan_ok = True
-                    break
-                        
-            self.node.get_logger().warn(f"Reset sync retry {attempt + 1}/10 (obs: {obs_ok}, plan_ok: {plan_ok})")
+            if obs_ok:
+                break
+            self.node.get_logger().warn(f"Reset obs retry {attempt + 1}/5")
             time.sleep(0.5)
 
-        if not obs_ok or not plan_ok:
-            self.node.get_logger().warn("Reset sonrası obs veya yeni plan tam senkron olamadı, yine de başlanıyor.")
+        if not obs_ok:
+            self.node.get_logger().warn("Reset sonrası obs alınamadı, sıfır obs ile devam.")
 
         self.prev_dist_to_goal = self._dist_to_goal()
         return self._get_obs(), {}

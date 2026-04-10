@@ -191,15 +191,25 @@ class OffboardControl(Node):
             self.last_plan_end = end
             return
 
-        ds = math.sqrt((start.x - self.last_plan_start.x) ** 2 + (start.y - self.last_plan_start.y) ** 2)
-        de = math.sqrt((end.x - self.last_plan_end.x) ** 2 + (end.y - self.last_plan_end.y) ** 2)
-        plan_changed_a_lot = (ds > PATH_RESET_DIST) or (de > PATH_RESET_DIST)
-
         self.current_path = poses
         self.last_plan_start = start
         self.last_plan_end = end
-
-        if plan_changed_a_lot:
+        
+        # Her yeni planda, mevcut pozisyonumuza en yakın indexi bularak path_index'i güncelliyoruz
+        # Böylece listeyi kopyaladığımızda hedef aniden zıplamaz
+        if hasattr(self, 'current_pos_enu'):
+            cx, cy = self.current_pos_enu[0], self.current_pos_enu[1]
+            best_d = float('inf')
+            best_i = 0
+            for i in range(min(50, len(poses))):  # Yeni plan drone'dan başlar, o yüzden ilk 50 noktaya bakalım
+                px = poses[i].pose.position.x
+                py = poses[i].pose.position.y
+                d = (px - cx)**2 + (py - cy)**2
+                if d < best_d:
+                    best_d = d
+                    best_i = i
+            self.path_index = best_i
+        else:
             self.path_index = 0
 
     def timer_callback(self):
@@ -306,21 +316,27 @@ class OffboardControl(Node):
 
     def _advance_path_index_if_reached(self):
         if not self.current_path:
-            self.path_index = 0
             return
-
-        self.path_index = self._find_closest_index_nearby()
-
+            
         curr_x = self.current_pos_enu[0]
         curr_y = self.current_pos_enu[1]
 
-        while self.path_index < len(self.current_path) - 1:
-            wp = self.current_path[self.path_index].pose.position
+        # Sadece bulunduğumuz noktadan biraz ileriye kadar tarayalım
+        best_dist = float('inf')
+        best_i = self.path_index
+        
+        search_end = min(len(self.current_path), self.path_index + 30)
+        
+        for i in range(self.path_index, search_end):
+            wp = self.current_path[i].pose.position
             dist = math.sqrt((wp.x - curr_x) ** 2 + (wp.y - curr_y) ** 2)
-            if dist < WAYPOINT_REACHED_DIST:
-                self.path_index += 1
-            else:
+            if dist <= best_dist:
+                best_dist = dist
+                best_i = i
+            elif dist > best_dist + 1.0:
                 break
+                
+        self.path_index = best_i
 
     def _get_lookahead_along_path(self, lookahead_dist):
         if not self.current_path:
@@ -410,9 +426,14 @@ class OffboardControl(Node):
             is_residual = getattr(self, "route_wp_frame_id", "") == "residual"
 
             if is_residual and target_enu is not None:
-                # Target is actual continuous A* lookahead (1.5m ahead) PLUS the RL bias offset!
-                target_north = target_enu.y + t_enu.y
-                target_east = target_enu.x + t_enu.x
+                # t_enu is the absolute position published by route_curriculum_env (drone_pos + RL bias)
+                # target_enu is the continuous A* lookahead (1.5m ahead)
+                # We need to extract the RL offset from t_enu and add it to the A* lookahead.
+                offset_east = t_enu.x - self.current_pos_enu[0]
+                offset_north = t_enu.y - self.current_pos_enu[1]
+
+                target_east = target_enu.x + offset_east
+                target_north = target_enu.y + offset_north
                 # Don't touch target_down; let it fallback to mission_altitude 
             else:
                 target_north = t_enu.y

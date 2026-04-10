@@ -68,10 +68,11 @@ from stable_baselines3.common.monitor import Monitor
 
 import uav_route_planner.envs  # noqa: F401  — triggers register()
 
-# Birlesik maze: pozisyon bazli stage, teleport yok
-UNIFIED_MAZE = True
+# Birlesik maze iptal: adim sayisina gore (zamansal) stage ilerlemesi kullanilacak
+UNIFIED_MAZE = False
 
-# Stage 3 aktor spawn: birlesik maze'de maze ile birlikte spawn edilir
+# Stage 3 aktor spawn: eski usul lazy spawn
+
 def spawn_stage3_actors_lazy():
     try:
         from uav_route_planner.maze_curriculum_world import spawn_stage3_actors_lazy as _fn
@@ -864,9 +865,12 @@ def main(args=None):
 
     scheduler_node = None
     stage_pub = None
+    ros_thread = None
     if not UNIFIED_MAZE:
         scheduler_node = rclpy.create_node("train_route_curriculum_scheduler")
         stage_pub = scheduler_node.create_publisher(Int32, "/route/set_stage", 10)
+        ros_thread = threading.Thread(target=rclpy.spin, args=(scheduler_node,), daemon=True)
+        ros_thread.start()
 
     # --- Environment ---
     def make_env():
