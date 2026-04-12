@@ -116,7 +116,8 @@ class RouteGoalNavigator(Node):
         qos_goal = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
-            history=HistoryPolicy.KEEP_LAST, depth=1,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
         )
 
         self.path_pub = self.create_publisher(Path, "/plan", qos_path)

@@ -1,42 +1,4 @@
 #!/usr/bin/env python3
-"""
-train_route_curriculum.py — 3-stage curriculum training for Route Agent
-
-Stages (non-unified; varsayılan toplam 300K — env ile değişir):
-    1  (0 - 75K)    Path following — open maze, no actors
-    2  (75K - 175K) Static obstacles — narrow corridors, dead-ends
-    3  (175K - 300K) Dynamic threats — 180-200 walking actors
-
-Callbacks:
-    CurriculumScheduler     Stage transition + lazy actor spawning
-    RouteTrainingMonitor    Policy entropy, action std, value loss,
-                            success/collision/timeout rates, episode length,
-                            deterministic-vs-stochastic comparison,
-                            route quality metrics (path error, threat exposure),
-                            reward/mean_rw_* (episode means of env info components)
-    TrajectoryRecorder      Per-episode position + entropy/std for heatmap
-    ProgressReporter        ETA and FPS
-
-Usage:
-    ros2 run uav_route_planner train_route_curriculum
-
-VecEnv:
-    Varsayılan SubprocVecEnv(spawn): ROS env ayrı süreçte (GIL ile SAC ayrılır).
-    Sorun çıkarsa: ROUTE_USE_DUMMY_VEC=1 ile eski tek-süreç DummyVecEnv.
-
-SAC başlangıç (kök neden — “drone ne yapacağını bilmiyor” hissi):
-    learning_starts (ROUTE_LEARNING_STARTS, varsayılan 5000) dolana kadar SB3 SAC rastgele
-    aksiyon toplar; politika henüz anlamlı değildir. Bu fazda waypoint’ler sarsılır.
-    İnce ayar: ROUTE_RANDOM_PHASE_ACTION_SCALE=0.25 — sadece bu fazda aksiyon ölçeği (env içinde).
-    train script SyncSB3TimestepCallback ile _sb3_num_timesteps yazar (Subproc uyumlu).
-
-Waypoint adımı:
-    ROUTE_STEP_SIZE (m, varsayılan 0.3) — RouteCurriculumEnv / RouteEnv xy residual ölçeği; 0.2 tipik yumuşatma.
-
-Torch iş parçacığı:
-    TORCH_NUM_THREADS (varsayılan 1) — ana süreçte CPU çekişmesini azaltmak için.
-"""
-
 import os
 import sys
 import time
@@ -52,12 +14,11 @@ import numpy as np
 
 try:
     import matplotlib
-    matplotlib.use("Agg")  # GUI yok, sadece dosyaya kaydet
+    matplotlib.use("Agg")  
     import matplotlib.pyplot as plt
     HAS_MATPLOTLIB = True
 except ImportError:
     HAS_MATPLOTLIB = False
-    # Grafik kaydetmek icin: pip install matplotlib
 import gymnasium as gym
 import rclpy
 
@@ -65,14 +26,10 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, CallbackList
 from stable_baselines3.common.monitor import Monitor
+import glob
 
-import uav_route_planner.envs  # noqa: F401  — triggers register()
-
-# Birlesik maze iptal: adim sayisina gore (zamansal) stage ilerlemesi kullanilacak
+import uav_route_planner.envs  
 UNIFIED_MAZE = False
-
-# Stage 3 aktor spawn: eski usul lazy spawn
-
 def spawn_stage3_actors_lazy():
     try:
         from uav_route_planner.maze_curriculum_world import spawn_stage3_actors_lazy as _fn
@@ -88,8 +45,6 @@ from std_msgs.msg import Int32
 
 
 class TimestepSyncWrapper(gym.Wrapper):
-    """Monitor dışında: VecEnv.env_method('set_sb3_timesteps', n) → RouteCurriculumEnv."""
-
     def set_sb3_timesteps(self, n: int) -> None:
         self.env.unwrapped.set_sb3_timesteps(int(n))
 
@@ -101,9 +56,7 @@ class TimestepSyncWrapper(gym.Wrapper):
 
 
 class SyncSB3TimestepCallback(BaseCallback):
-    """Her adımda SB3 toplam timestep’i env’e iletir (random-phase ölçekleme için)."""
-
-    def _on_step(self) -> bool:
+   def _on_step(self) -> bool:
         try:
             self.training_env.env_method("set_sb3_timesteps", int(self.num_timesteps))
         except Exception:
@@ -117,8 +70,7 @@ def _route_curriculum_subproc_env_fn(log_dir: str, rank: int):
     Worker sürecinde Gym kaydı için mutlaka env paketi import edilmeli.
     """
     def _init():
-        import uav_route_planner.envs  # noqa: F401 — RouteCurriculumAgent-v0 register (spawn'ta şart)
-
+        import uav_route_planner.envs  
         os.makedirs(log_dir, exist_ok=True)
         path = os.path.join(log_dir, f"monitor_{rank}.csv")
         env = gym.make("RouteCurriculumAgent-v0")
@@ -130,15 +82,9 @@ def _route_curriculum_subproc_env_fn(log_dir: str, rank: int):
 
 
 def _vec_env_call_method(training_env, method_name: str, *args, indices=None):
-    """VecNormalize altındaki DummyVecEnv / SubprocVecEnv üzerinde metod çağrısı."""
     venv = training_env.venv
     idx = indices if indices is not None else [0]
     return venv.env_method(method_name, *args, indices=idx)[0]
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# GLOBALS FOR SIGNAL HANDLER (protected by lock to avoid race with training loop)
-# ═══════════════════════════════════════════════════════════════════════════════
 
 _shutdown_lock = threading.Lock()
 _shutdown_done = False
@@ -149,7 +95,6 @@ _trajectory_recorder = None
 
 
 def _do_shutdown():
-    """Save and cleanup. Called by signal handler or atexit."""
     global _shutdown_done
     with _shutdown_lock:
         if _shutdown_done:
@@ -190,17 +135,9 @@ def _signal_handler(sig, frame):
     _do_shutdown()
     sys.exit(0)
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CALLBACK 1: CURRICULUM SCHEDULER
-# ═══════════════════════════════════════════════════════════════════════════════
-
 class CurriculumScheduler(BaseCallback):
-    """Manages stage transitions and lazy actor spawning."""
-
     @staticmethod
     def default_stage_ranges():
-        """ROUTE_TOTAL_TIMESTEPS, ROUTE_STAGE1_END, ROUTE_STAGE2_END ile yapılandırılır."""
         t = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "204800"))
         s1 = int(os.environ.get("ROUTE_STAGE1_END", "70000"))
         s2 = int(os.environ.get("ROUTE_STAGE2_END", "140000"))
@@ -212,13 +149,12 @@ class CurriculumScheduler(BaseCallback):
         super().__init__(verbose)
         self.current_stage = 1
         self.stage_ranges = CurriculumScheduler.default_stage_ranges()
-        # Non-unified: ana süreçte /route/set_stage (Subproc'te child node'a erişilmez)
         self._stage_pub = stage_pub
         self._actors_spawned = False
 
     def _on_training_start(self):
         if UNIFIED_MAZE:
-            return  # Stage from position; no publisher needed
+            return 
         if self._stage_pub is not None:
             return
         raw_env = self._get_raw_env()
@@ -229,7 +165,7 @@ class CurriculumScheduler(BaseCallback):
 
     def _on_step(self) -> bool:
         if UNIFIED_MAZE:
-            return True  # Birlesik maze: stage pozisyondan, scheduler devre disi
+            return True 
         target_stage = self._stage_for_timestep(self.num_timesteps)
         if target_stage != self.current_stage:
             self._transition(target_stage)
@@ -274,8 +210,6 @@ class CurriculumScheduler(BaseCallback):
         except Exception:
             return None
 
-
-# Per-step keys from route_curriculum_env info (episode means → TensorBoard reward/mean_*).
 _ROUTE_RW_INFO_KEYS = (
     "rw_progress",
     "rw_goal",
@@ -284,18 +218,10 @@ _ROUTE_RW_INFO_KEYS = (
     "rw_astar_return",
     "rw_path_drift",
     "rw_threat",
-    "rw_smooth",
     "rw_time",
 )
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# BASE: Route Episode Metrics (shared by Monitor + PlotSaver)
-# ═══════════════════════════════════════════════════════════════════════════════
-
 class _RouteEpisodeMetricsMixin:
-    """Shared episode metrics collection. Used by RouteTrainingMonitor and PlotSaverCallback."""
-
     def _init_episode_metrics(self, window=100):
         self.ep_successes = deque(maxlen=window)
         self.ep_collisions = deque(maxlen=window)
@@ -351,20 +277,7 @@ class _RouteEpisodeMetricsMixin:
                 self._step_on_astar.clear()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CALLBACK 2: ROUTE TRAINING MONITOR
-# ═══════════════════════════════════════════════════════════════════════════════
-
 class RouteTrainingMonitor(_RouteEpisodeMetricsMixin, BaseCallback):
-    """
-    Unified monitoring callback:
-    - Policy entropy, action std, value loss
-    - Success / collision / timeout rates
-    - Episode length, mean reward
-    - Deterministic vs stochastic action comparison
-    - Route quality: path error, threat exposure
-    """
-
     def __init__(self, log_freq=2048, compare_freq=10_000, window=100, verbose=0):
         BaseCallback.__init__(self, verbose)
         self.log_freq = log_freq
@@ -387,12 +300,9 @@ class RouteTrainingMonitor(_RouteEpisodeMetricsMixin, BaseCallback):
     def _log_training_metrics(self):
         vals = getattr(self.model.logger, "name_to_value", {})
 
-        # PPO: train/entropy_loss; SAC: train/entropy or train/ent_coef (ent_coef_loss is alpha loss)
         entropy = vals.get("train/entropy_loss") or vals.get("train/entropy") or vals.get("train/ent_coef")
         if entropy is not None:
             self.logger.record("monitor/policy_entropy", entropy)
-
-        # PPO: train/value_loss; SAC: train/critic_loss
         value_loss = vals.get("train/value_loss") or vals.get("train/critic_loss")
         if value_loss is not None:
             self.logger.record("monitor/value_loss", value_loss)
@@ -458,14 +368,7 @@ class RouteTrainingMonitor(_RouteEpisodeMetricsMixin, BaseCallback):
         except Exception:
             pass
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CALLBACK 3: TRAJECTORY RECORDER
-# ═══════════════════════════════════════════════════════════════════════════════
-
 class TrajectoryRecorder(BaseCallback):
-    """Records per-episode drone trajectories with confidence data for heatmaps."""
-
     def __init__(self, save_dir, max_episodes=500, verbose=0):
         super().__init__(verbose)
         self.save_dir = save_dir
@@ -550,10 +453,6 @@ class TrajectoryRecorder(BaseCallback):
         self.flush()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CALLBACK 4: PROGRESS REPORTER
-# ═══════════════════════════════════════════════════════════════════════════════
-
 class ProgressReporter(BaseCallback):
     def __init__(self, total_timesteps, report_freq=10_000):
         super().__init__()
@@ -601,13 +500,7 @@ class ProgressReporter(BaseCallback):
         self.last_report_time = now
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TRAINING LOG CALLBACK
-# ═══════════════════════════════════════════════════════════════════════════════
-
 class TrainingLogWriter(BaseCallback):
-    """Writes periodic training stats to a JSON file."""
-
     def __init__(self, log_file, log_freq=5000):
         super().__init__()
         self.log_file = log_file
@@ -651,13 +544,7 @@ class TrainingLogWriter(BaseCallback):
         self._flush()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CALLBACK 6: PLOT SAVER — Grafikleri PNG olarak kaydet
-# ═══════════════════════════════════════════════════════════════════════════════
-
 class PlotSaverCallback(_RouteEpisodeMetricsMixin, BaseCallback):
-    """Metrikleri grafik olarak PNG dosyasina kaydeder."""
-
     def __init__(self, save_dir, record_freq=2048, save_freq=50_000, window=100, verbose=0):
         BaseCallback.__init__(self, verbose)
         self.save_dir = save_dir
@@ -665,7 +552,7 @@ class PlotSaverCallback(_RouteEpisodeMetricsMixin, BaseCallback):
         self.save_freq = save_freq
         self.window = window
         self._init_episode_metrics(window)
-        self.history = []  # [(timestep, {...}), ...]
+        self.history = []  
 
     def _on_step(self) -> bool:
         if not HAS_MATPLOTLIB:
@@ -713,7 +600,6 @@ class PlotSaverCallback(_RouteEpisodeMetricsMixin, BaseCallback):
         fig, axes = plt.subplots(2, 3, figsize=(14, 9))
         fig.suptitle(f"Route Curriculum Training — {self.num_timesteps:,} steps", fontsize=12)
 
-        # Episode metrics
         ax = axes[0, 0]
         ax.plot(ts, [h["ep_rew_mean"] for h in self.history], "b-", label="Reward")
         ax.set_title("Mean Episode Reward")
@@ -733,7 +619,6 @@ class PlotSaverCallback(_RouteEpisodeMetricsMixin, BaseCallback):
         ax.set_title("Mean Episode Length")
         ax.grid(True, alpha=0.3)
 
-        # Training metrics
         ax = axes[1, 0]
         ent_ts = [h["timesteps"] for h in self.history if h["entropy"] is not None]
         ent_vals = [h["entropy"] for h in self.history if h["entropy"] is not None]
@@ -764,8 +649,6 @@ class PlotSaverCallback(_RouteEpisodeMetricsMixin, BaseCallback):
         plt.close()
         if self.verbose:
             print(f"Grafikler kaydedildi: {path}")
-
-        # Episode ortalaması ödül bileşenleri (env info rw_* → rolling window)
         fig_rw, axes_rw = plt.subplots(3, 3, figsize=(12, 10))
         fig_rw.suptitle(
             f"Reward components (mean per episode, window) — {self.num_timesteps:,} steps",
@@ -791,18 +674,11 @@ class PlotSaverCallback(_RouteEpisodeMetricsMixin, BaseCallback):
             if self.verbose:
                 print(f"Final grafikler: {self.save_dir}")
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# MAIN
-# ═══════════════════════════════════════════════════════════════════════════════
-
 TOTAL_TIMESTEPS = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "204800"))
 
 
 def main(args=None):
     global _model, _env, _save_dir, _trajectory_recorder
-
-    # noVNC / pipe / bazı terminallerde stdout tamponlu kalır → "log yok" sanılır
     if hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(line_buffering=True)
@@ -833,6 +709,14 @@ def main(args=None):
     os.makedirs(plots_dir, exist_ok=True)
     _save_dir = models_dir
 
+    old = glob.glob(f"{models_dir}/*.zip")
+    if old:
+        raise RuntimeError(
+            f"Eski checkpoint var, sıfırdan başlamak için önce sil:\n"
+            f"  rm -rf {models_dir}\n"
+            f"Bulunanlar: {old}"
+        )
+
     print("=" * 60, flush=True)
     print("ROUTE AGENT CURRICULUM TRAINING", flush=True)
     print("=" * 60, flush=True)
@@ -850,17 +734,7 @@ def main(args=None):
         )
     if not HAS_MATPLOTLIB:
         print("Not:    Grafik kaydi icin: pip install matplotlib", flush=True)
-    use_dummy_vec = os.environ.get("ROUTE_USE_DUMMY_VEC", "").lower() in ("1", "true", "yes")
-    if use_dummy_vec:
-        print(
-            "VecEnv:  DummyVecEnv (ROUTE_USE_DUMMY_VEC) — ROS+SAC ayni proses; GIL riski",
-            flush=True,
-        )
-    else:
-        print(
-            "VecEnv:  SubprocVecEnv(spawn) — env ayri proses; GIL'den kurtulma",
-            flush=True,
-        )
+    print("VecEnv:  DummyVecEnv — ROS+SAC ayni proses", flush=True)
     print("=" * 60, flush=True)
 
     scheduler_node = None
@@ -872,20 +746,13 @@ def main(args=None):
         ros_thread = threading.Thread(target=rclpy.spin, args=(scheduler_node,), daemon=True)
         ros_thread.start()
 
-    # --- Environment ---
     def make_env():
         env = gym.make("RouteCurriculumAgent-v0")
         env = Monitor(env, filename=os.path.join(log_dir, "monitor.csv"))
         env = TimestepSyncWrapper(env)
         return env
 
-    if use_dummy_vec:
-        vec_env = DummyVecEnv([make_env])
-    else:
-        vec_env = SubprocVecEnv(
-            [_route_curriculum_subproc_env_fn(log_dir, 0)],
-            start_method="spawn",
-        )
+    vec_env = DummyVecEnv([make_env])
     HYPERPARAMS = {
         "learning_rate": 3e-4,
         "n_steps":       2048,
@@ -923,8 +790,6 @@ def main(args=None):
         ),
     )
     _model = model
-
-    # --- Callbacks ---
     curriculum_scheduler = CurriculumScheduler(verbose=1, stage_pub=stage_pub)
 
     route_monitor = RouteTrainingMonitor(
@@ -1004,9 +869,7 @@ def main(args=None):
             callback=callbacks,
         )
         steps_done += chunk
-        # CheckpointCallback handles saves at save_freq; no manual duplicate
 
-    # --- Final save ---
     model.save(os.path.join(models_dir, "final_model"))
     env.save(os.path.join(models_dir, "vec_normalize_final.pkl"))
     trajectory_recorder.flush()

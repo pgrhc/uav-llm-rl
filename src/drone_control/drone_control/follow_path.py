@@ -38,8 +38,8 @@ YAW_DEADBAND = 0.2
 TURN_ON_THRESHOLD  = 0.55
 TURN_OFF_THRESHOLD = 0.35
 
-SETPOINT_ALPHA = 0.15
-MAX_SETPOINT_STEP = 0.25
+SETPOINT_ALPHA = 0.25          # was 0.15 — snappier tracking
+MAX_SETPOINT_STEP = 0.60       # was 0.25 — faster drone movement
 TIMER_PERIOD = 0.05
 
 NEAR_TARGET_DIST = 0.15
@@ -426,14 +426,10 @@ class OffboardControl(Node):
             is_residual = getattr(self, "route_wp_frame_id", "") == "residual"
 
             if is_residual and target_enu is not None:
-                # t_enu is the absolute position published by route_curriculum_env (drone_pos + RL bias)
-                # target_enu is the continuous A* lookahead (1.5m ahead)
-                # We need to extract the RL offset from t_enu and add it to the A* lookahead.
-                offset_east = t_enu.x - self.current_pos_enu[0]
-                offset_north = t_enu.y - self.current_pos_enu[1]
-
-                target_east = target_enu.x + offset_east
-                target_north = target_enu.y + offset_north
+                # t_enu is ALREADY the absolute position calculated by route_curriculum_env
+                # It contains (A* lookahead + RL residual bias). So we MUST use it directly.
+                target_east = t_enu.x
+                target_north = t_enu.y
                 # Don't touch target_down; let it fallback to mission_altitude 
             else:
                 target_north = t_enu.y

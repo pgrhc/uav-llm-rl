@@ -1,52 +1,4 @@
 #!/usr/bin/env python3
-"""
-Route Planning Agent — Curriculum Learning Environment
-
-Observation (same as RouteEnv):
-    lidar_vector   : (36,)        — MLP   /threat/state_vec lidar subset
-    threat_vector  : (74,)        — MLP   /threat/state_vec
-    threat_scores  : (5,)         — MLP   /threat/target_scores
-    goal_state     : (7,)         — MLP   (rel_goal, dist, speed, yaw)
-    a_star_path    : (10,)        — MLP   /plan  (5 wp × rel_x,rel_y)
-
-Action:
-    Box(4,) → (dx, dy, dz, dyaw) body frame, scaled by STEP_SIZE / Z_STEP / MAX_YAW_RATE
-    ROUTE_STEP_SIZE (env, m) — xy adım ölçeği, varsayılan 0.3 (ör. 0.2 daha yumuşak waypoint)
-
-    Hybrid A* baseline (default, ROUTE_HYBRID_ASTAR=1):
-        waypoint_xy = lookahead + threat_gate × body-frame residual (dx,dy)
-        wp_z        = CRUISE_Z + threat_gate × dz (clip ±ROUTE_HYBRID_Z_CLIP) veya ROUTE_HYBRID_USE_Z_ACTION=0 iken sabit CRUISE_Z
-        yaw         = hedefe doğru + threat_gate × küçük dyaw düzeltmesi
-        threat_gate = sigmoid(effective_max; ROUTE_THREAT_GATE_THRESHOLD, ROUTE_THREAT_GATE_K)
-          effective_max = max(target_scores) [+ Stage1 sentetik gürültü isteğe bağlı]
-    ROUTE_HYBRID_ASTAR=0: waypoint = drone + threat_gate × offset (tam 4D)
-    ROUTE_THREAT_GATE=0: gate=1.0; path cezası sabit 0.5×path_err_norm (kapı ölçeği yok)
-
-Reward (step() ile birebir — VecNormalize öncesi ham r):
-    r_progress          +3.0 × (prev_dist_to_goal − dist)   (hedef yoksa 0)
-    r_goal              +50.0  (0.5 m içinde, çarpışma yoksa)
-    r_collision         −100.0 (öncelikli; costmap wp+drone / LiDAR / aktör)
-    r_path              −0.5 × min(path_err/5,1) × path_w
-          path_w = PATH_ERR_SCALE_LOW×(1−g)+PATH_ERR_SCALE_HIGH×g  (THREAT_GATE açıkken)
-          değilse path_w = 1.0
-    r_astar_return      +ASTAR_RETURN_BONUS (kapı açık, g küçük, path_err küçükse)
-    r_path_drift        −50.0  (path_err > PATH_ERROR_TERMINATE_M, plan yeterliyse)
-    r_threat            −2.0 × max(threat_scores)  (adım sonrası güncel skorlar)
-    r_smooth            −0.05 × ‖a − a_prev‖
-    r_time              −0.1
-
-    info: rw_* alanlarında bu bileşenler ayrı ayrı (log/TensorBoard için).
-
-Stages:
-    1  Path following — open maze, no actors
-    2  Static obstacles — narrow corridors, dead-ends
-    3  Dynamic threats — 180-200 walking actors
-
-Eğitim (SAC) ile:
-    train script SB3 timestep’i set_sb3_timesteps ile yazar. ROUTE_RANDOM_PHASE_ACTION_SCALE<1
-    ve ROUTE_LEARNING_STARTS ile eşleşen süre boyunca aksiyon bu faktörle küçültülür (random toplama fazı).
-"""
-
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
@@ -65,7 +17,6 @@ from std_msgs.msg import Float32MultiArray
 from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from geometry_msgs.msg import PoseStamped, PoseArray
 
-# Curriculum maze sabitleri (maze_curriculum_world.py ile ayni degerler)
 _WALLS_DIR = "/home/ubuntu/Desktop"
 STAGE_ORIGINS = {1: (0.0, 0.0), 2: (0.0, 0.0), 3: (0.0, 0.0)}
 WALLS_PATHS = {
@@ -77,26 +28,20 @@ ACTORS_JSON_PATH = os.path.join(_WALLS_DIR, "maze_actors_stage3.json")
 ACTORS_UNIFIED_JSON_PATH = os.path.join(_WALLS_DIR, "maze_actors_unified.json")
 WALLS_UNIFIED_PATH = os.path.join(_WALLS_DIR, "maze_walls_unified.json")
 
-# Birlesik maze iptal: in-place manager kullanilacak
 UNIFIED_MAZE = False 
 UNIFIED_ORIGIN = (0.0, 0.0)
-# Stage boundaries (pasif duruma getirildi in-place manager sayesinde)
 SECTION1_X_MAX = 5000.0
 SECTION2_X_MAX = 12500.0
 
-
-
-
 class RouteCurriculumEnv(gym.Env):
     metadata = {"render_modes": []}
-
     STEP_SIZE = float(os.environ.get("ROUTE_STEP_SIZE", "0.3"))
     Z_STEP = 0.2
     MAX_YAW_RATE = 0.52
-    GOAL_TOLERANCE = 0.5
+    GOAL_TOLERANCE = 1.3
     SAFETY_RADIUS = 0.5
     LETHAL_THRESHOLD = 90
-    MAX_EPISODE_STEPS = 1000
+    MAX_EPISODE_STEPS = 2048
     MAX_GOAL_DIST = 30.0
     MAX_SPEED = 5.0
 
@@ -108,22 +53,16 @@ class RouteCurriculumEnv(gym.Env):
 
     DRONE_MODEL_NAME = "x500_mono_cam_0"
     GZ_WORLD_NAME = "default"
-    RESET_STABILIZE_SEC = 2.0  # 5.0 → 2.0
-
-    # Hibrit rota: /plan üzerindeki lookahead + SAC rezidüeli; 0=eski offset modu
+    RESET_STABILIZE_SEC = 2.0 
     HYBRID_ASTAR_BASELINE = os.environ.get("ROUTE_HYBRID_ASTAR", "1").lower() not in (
         "0",
         "false",
         "no",
     )
-    # Yayınlanan waypoint irtifası (dz aksiyonu hybrid modda kullanılmaz)
     CRUISE_Z = float(os.environ.get("ROUTE_CRUISE_Z", "1.5"))
-    # A* koridordan çok sapınca episode bitir (0 = kapat)
     PATH_ERROR_TERMINATE_M = float(os.environ.get("ROUTE_PATH_ERROR_TERMINATE", "8.0"))
     PATH_ERROR_TERMINATE_PENALTY = -50.0
-    YAW_RESIDUAL_SCALE = 0.25  # dyaw bu kadar çarpanla lookahead yaw'a eklenir
-
-    # Tehdit kapısı: max(/threat/target_scores) → sigmoid; SAC rezidüeli ve path cezası ölçeklenir
+    YAW_RESIDUAL_SCALE = 0.25  
     THREAT_GATE_ENABLED = os.environ.get("ROUTE_THREAT_GATE", "1").lower() not in (
         "0",
         "false",
@@ -137,14 +76,12 @@ class RouteCurriculumEnv(gym.Env):
     PATH_ERR_SCALE_HIGH_THREAT = float(
         os.environ.get("ROUTE_PATH_ERR_SCALE_HIGH_THREAT", "0.1")
     )
-    ASTAR_ON_PATH_M = float(os.environ.get("ROUTE_ASTAR_ON_PATH_M", "1.5"))
+    ASTAR_ON_PATH_M = float(os.environ.get("ROUTE_ASTAR_ON_PATH_M", "2.5"))
     ASTAR_RETURN_BONUS = float(os.environ.get("ROUTE_ASTAR_RETURN_BONUS", "0.05"))
     ASTAR_RETURN_GATE_MAX = float(os.environ.get("ROUTE_ASTAR_RETURN_GATE_MAX", "0.2"))
-    # Stage 1 (x bölgesi): kapı girdisine [0, MAX] arası uniform gürültü (hedef skorlar düşükken bile sapma eğitimi)
     SYNTHETIC_GATE_STAGE1_MAX = float(
         os.environ.get("ROUTE_SYNTHETIC_GATE_STAGE1_MAX", "0")
     )
-    # Hibrit modda dz kullanımı: CRUISE_Z ± clip; 0=sabit CRUISE_Z (eski davranış)
     HYBRID_USE_Z_ACTION = os.environ.get("ROUTE_HYBRID_USE_Z_ACTION", "1").lower() not in (
         "0",
         "false",
@@ -197,6 +134,8 @@ class RouteCurriculumEnv(gym.Env):
         self.goal_x = None
         self.goal_y = None
         self.goal_z = None
+        self._ep_goal_x = None
+        self._ep_goal_y = None
 
         self.prev_dist_to_goal = None
         self.prev_action = np.zeros(4, dtype=np.float32)
@@ -212,26 +151,18 @@ class RouteCurriculumEnv(gym.Env):
         self.new_threat = False
         self.new_odom = False
         self._last_odom_time = 0.0
-        # reset() sonrası yalnızca bu andan sonra gelen odom "taze" sayılır (teleport sonrası)
         self._reset_wall_time = 0.0
-        # Son threat mesajının işlendiği wall time (GIL yükünde edge bayrağı kaçabilir)
         self._last_threat_wall_time = 0.0
         self.cond = threading.Condition()
 
-        # Actor tracking
         self.latest_actor_poses = []
 
-        # Episode stats
         self.episode_reward = 0.0
         self.episode_collisions = 0
         self.episode_successes = 0
 
-        # train_route_curriculum SyncSB3TimestepCallback ile güncellenir (Subproc dahil)
         self._sb3_num_timesteps = 0
 
-        # --- ROS 2 ---
-        # Note: rclpy.init() is process-global. Multi-process RL (e.g. SubprocVecEnv)
-        # shares the same rclpy context; close() calling rclpy.shutdown() kills others.
         self._rclpy_initialized = False
         if not rclpy.ok():
             rclpy.init()
@@ -252,7 +183,6 @@ class RouteCurriculumEnv(gym.Env):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE, depth=10,
         )
-        # Nav2 costmap yayınları: RELIABLE + TRANSIENT_LOCAL (VOLATILE abone eşleşmeyebilir)
         qos_costmap = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -279,15 +209,9 @@ class RouteCurriculumEnv(gym.Env):
 
         self._spin_thread = threading.Thread(target=self._spin, daemon=True)
         self._spin_thread.start()
-        time.sleep(1.0)  # Allow spin thread to subscribe and receive first messages
+        time.sleep(1.0)  
 
-
-
-    # ------------------------------------------------------------------ #
-    # Curriculum API
-    # ------------------------------------------------------------------ #
     def _stage_from_position(self, x: float) -> int:
-        """Pozisyona gore stage (birlesik maze)."""
         if x < SECTION1_X_MAX:
             return 1
         if x < SECTION2_X_MAX:
@@ -304,15 +228,18 @@ class RouteCurriculumEnv(gym.Env):
             f"Curriculum stage → {stage}  origin={self._stage_origin}"
         )
 
-    # ------------------------------------------------------------------ #
-    # ROS spin & callbacks
-    # ------------------------------------------------------------------ #
     def _spin(self):
-        while self._running and rclpy.ok():
-            try:
-                rclpy.spin_once(self.node, timeout_sec=0.1)
-            except Exception:
-                break
+        from rclpy.executors import SingleThreadedExecutor
+        executor = SingleThreadedExecutor()
+        executor.add_node(self.node)
+        try:
+            while self._running and rclpy.ok():
+                try:
+                    executor.spin_once(timeout_sec=0.1)
+                except Exception:
+                    break
+        finally:
+            executor.remove_node(self.node)
 
     def _cb_threat(self, msg: Float32MultiArray):
         data = np.array(msg.data, dtype=np.float32)
@@ -353,9 +280,12 @@ class RouteCurriculumEnv(gym.Env):
 
     def _cb_goal(self, msg: PoseStamped):
         with self.cond:
-            self.goal_x = msg.pose.position.x
-            self.goal_y = msg.pose.position.y
-            self.goal_z = msg.pose.position.z
+            new_gx = msg.pose.position.x
+            new_gy = msg.pose.position.y
+            new_gz = msg.pose.position.z
+            self.goal_x = new_gx
+            self.goal_y = new_gy
+            self.goal_z = new_gz
 
     def _cb_costmap(self, msg: OccupancyGrid):
         with self.cond:
@@ -371,12 +301,7 @@ class RouteCurriculumEnv(gym.Env):
         with self.cond:
             self.latest_actor_poses = [(p.position.x, p.position.y) for p in msg.poses]
 
-    # ------------------------------------------------------------------ #
-    # Helpers
-    # ------------------------------------------------------------------ #
     def _wait_obs(self, timeout: float = 0.5, step_mode: bool = False) -> bool:
-        """step_mode=True: SAC+PyTorch ana thread GIL yüzünden spin gecikince bile
-        son threat verisi yeterli sayılır (yeni edge + patch + odom şartı çok sıkı kalırdı)."""
         end = time.time() + timeout
         threat_grace_sec = 0.5
         with self.cond:
@@ -415,7 +340,9 @@ class RouteCurriculumEnv(gym.Env):
 
     def _build_goal_state(self) -> np.ndarray:
         with self.cond:
-            gx, gy, gz = self.goal_x, self.goal_y, self.goal_z
+            gx = self._ep_goal_x if self._ep_goal_x is not None else self.goal_x
+            gy = self._ep_goal_y if self._ep_goal_y is not None else self.goal_y
+            gz = self.goal_z
             dx, dy, dz = self.drone_x, self.drone_y, self.drone_z
             dyaw = self.drone_yaw
             dspeed = self.drone_speed
@@ -437,13 +364,11 @@ class RouteCurriculumEnv(gym.Env):
         ], dtype=np.float32)
 
     def get_drone_position(self):
-        """Thread-safe drone position for callbacks (e.g. TrajectoryRecorder)."""
         with self.cond:
             return (self.drone_x, self.drone_y, self.drone_z)
 
     @staticmethod
     def _astar_forward_start_index(poses, dx: float, dy: float) -> int:
-        """İlk 'ileri' waypoint indeksi: geçilmiş segmentleri atlar (_build_a_star_obs ile aynı)."""
         if not poses:
             return 0
         nearest_idx = 0
@@ -453,8 +378,6 @@ class RouteCurriculumEnv(gym.Env):
             if d_sq < best_dist_sq:
                 best_dist_sq = d_sq
                 nearest_idx = i
-
-        # Forward-looking: skip waypoints already passed (dot product with path dir)
         if nearest_idx + 1 < len(poses):
             p0, p1 = poses[nearest_idx], poses[nearest_idx + 1]
             path_dx = p1[0] - p0[0]
@@ -470,7 +393,6 @@ class RouteCurriculumEnv(gym.Env):
 
     @staticmethod
     def _threat_sigmoid_gate(max_score: float, threshold: float, k: float) -> float:
-        """max(target_scores) ∈ [0,1] → tehdit kapısı ∈ (0,1). k büyüdükçe geçiş keskinleşir."""
         t = float(np.clip(max_score, 0.0, 1.0))
         if k <= 0.0:
             return 1.0 if t >= threshold else 0.0
@@ -518,10 +440,11 @@ class RouteCurriculumEnv(gym.Env):
 
     def _dist_to_goal(self) -> float:
         with self.cond:
-            gx, gy = self.goal_x, self.goal_y
+            gx = self._ep_goal_x if self._ep_goal_x is not None else self.goal_x
+            gy = self._ep_goal_y if self._ep_goal_y is not None else self.goal_y
             dx, dy = self.drone_x, self.drone_y
         if gx is None or gy is None:
-            return self.MAX_GOAL_DIST  
+            return self.MAX_GOAL_DIST
         return math.sqrt((gx - dx) ** 2 + (gy - dy) ** 2)
 
     def _dist_to_nearest_astar_wp(self) -> float:
@@ -537,15 +460,9 @@ class RouteCurriculumEnv(gym.Env):
                 best_sq = d_sq
         return math.sqrt(best_sq)
 
-    # ------------------------------------------------------------------ #
-    # Collision detection
-    # ------------------------------------------------------------------ #
     def _check_collision(self, wp_x: float, wp_y: float) -> bool:
         with self.cond:
             dx, dy = self.drone_x, self.drone_y
-
-        if self._check_costmap_collision(wp_x, wp_y):
-            return True
         if self._check_costmap_collision(dx, dy):
             return True
         if self._check_lidar_collision():
@@ -595,21 +512,15 @@ class RouteCurriculumEnv(gym.Env):
             if math.sqrt(dx * dx + dy * dy) < self.ACTOR_COLLISION_RADIUS:
                 return True
         return False
-
-    # ------------------------------------------------------------------ #
-    # Teleportation / soft reset
-    # ------------------------------------------------------------------ #
     def _soft_reset_drone(self):
         if self.unified_maze:
             x, y = UNIFIED_ORIGIN
         else:
             x, y = self._stage_origin
         z = self._spawn_z
-
-        # Prevent violent EKF jumps on initial startup and if drone is already at spawn
         dist_to_spawn = math.hypot(self.drone_x - x, self.drone_y - y)
         if dist_to_spawn < 1.0 and abs(self.drone_z - z) < 1.0:
-            return  # Zaten spawn noktasinda, teleport gerekmiyor.
+            return 
 
         req_str = (
             f'name: "{self.DRONE_MODEL_NAME}", '
@@ -646,11 +557,7 @@ class RouteCurriculumEnv(gym.Env):
         msg.pose.orientation.w = math.cos(wyaw / 2.0)
         self.waypoint_pub.publish(msg)
 
-    # ------------------------------------------------------------------ #
-    # Gym interface
-    # ------------------------------------------------------------------ #
     def set_sb3_timesteps(self, n: int) -> None:
-        """Stable-Baselines3 toplam environment adımı (learn döngüsü). Callback yazar."""
         try:
             self._sb3_num_timesteps = max(0, int(n))
         except (TypeError, ValueError):
@@ -668,8 +575,6 @@ class RouteCurriculumEnv(gym.Env):
         with self.cond:
             self.new_threat = False
             self.new_odom = False
-
-        # self._soft_reset_drone() # Kullanıcı talebi üzerine tamamen kaldırıldı
         self._last_episode_fatal = False
         
         with self.cond:
@@ -685,6 +590,10 @@ class RouteCurriculumEnv(gym.Env):
 
         if not obs_ok:
             self.node.get_logger().warn("Reset sonrası obs alınamadı, sıfır obs ile devam.")
+
+        with self.cond:
+            self._ep_goal_x = self.goal_x
+            self._ep_goal_y = self.goal_y
 
         self.prev_dist_to_goal = self._dist_to_goal()
         if not np.isfinite(self.prev_dist_to_goal):
@@ -705,18 +614,18 @@ class RouteCurriculumEnv(gym.Env):
         )
         
         if stage_for_gate == 1:
-            current_step_size = 0.10
-            current_yaw_scale = 0.10
+            current_step_size = 0.25   
+            current_yaw_scale = 0.20 
             current_path_terminate = max(4.0, self.PATH_ERROR_TERMINATE_M)
-            current_path_penalty = -2.0
+            current_path_penalty = -0.5
             current_path_high_threat = 0.3
         elif stage_for_gate == 2:
-            current_step_size = 0.15
+            current_step_size = 0.25         
             current_yaw_scale = 0.15
             current_path_terminate = max(6.0, self.PATH_ERROR_TERMINATE_M)
             current_path_penalty = -2.0
             current_path_high_threat = 0.2
-        else: # Stage 3
+        else: 
             current_step_size = 0.30
             current_yaw_scale = 0.25
             current_path_terminate = max(8.0, self.PATH_ERROR_TERMINATE_M)
@@ -736,7 +645,12 @@ class RouteCurriculumEnv(gym.Env):
             self.THREAT_GATE_THRESHOLD,
             self.THREAT_GATE_K,
         )
-        gate_apply = threat_gate if self.THREAT_GATE_ENABLED else 1.0
+        if stage_for_gate == 1:
+            gate_apply = 0.8      
+        elif stage_for_gate == 2:
+            gate_apply = max(0.6, threat_gate) 
+        else:
+            gate_apply = threat_gate if self.THREAT_GATE_ENABLED else 1.0
 
         dx = float(self.smoothed_action[0]) * current_step_size
         dy = float(self.smoothed_action[1]) * current_step_size
@@ -788,16 +702,11 @@ class RouteCurriculumEnv(gym.Env):
             wp_yaw = self.drone_yaw + dyaw * gate_apply
 
             self._publish_waypoint(wp_x, wp_y, wp_z, wp_yaw, is_residual=False)
-        # GIL: eğitim sırasında spin thread gecikir; threat edge kaçabilir → step_mode + biraz daha uzun süre.
         obs_sync_ok = self._wait_obs(timeout=0.40, step_mode=True)
 
-        # Birlesik maze: stage pozisyondan hesapla
         if self.unified_maze:
             self.curriculum_stage = self._stage_from_position(self.drone_x)
 
-        # ══════════════════════════════════════════════════════════════
-        # FIXED REWARD (identical formula across all stages)
-        # ══════════════════════════════════════════════════════════════
         reward = 0.0
         terminated = False
         truncated = False
@@ -820,12 +729,9 @@ class RouteCurriculumEnv(gym.Env):
         rw_astar_return = 0.0
         rw_path_drift = 0.0
         rw_threat = 0.0
-        rw_smooth = 0.0
-        rw_time = -0.1
-
-        # r_progress
+        rw_time = 0.0   
         rw_stall = 0.0
-        if self.prev_dist_to_goal is not None and self.goal_x is not None:
+        if self.prev_dist_to_goal is not None and self._ep_goal_x is not None:  
             progress = self.prev_dist_to_goal - dist
 
             if not np.isfinite(progress):
@@ -838,7 +744,6 @@ class RouteCurriculumEnv(gym.Env):
                 rw_stall = -0.2
                 reward += rw_stall
 
-        # r_goal vs r_collision: collision takes precedence (elif)
         if self._check_collision(wp_x, wp_y):
             rw_collision = -100.0
             reward += rw_collision
@@ -853,10 +758,9 @@ class RouteCurriculumEnv(gym.Env):
             info["success"] = True
             self.episode_successes += 1
 
-        # r_path_error: tehdit kapısı açıkken path_w ile ölçeklenir
         path_err = self._dist_to_nearest_astar_wp()
         path_err_normalized = min(path_err / 5.0, 1.0)
-        on_astar = 1.0 if path_err < self.ASTAR_ON_PATH_M else 0.0
+        on_astar = path_err < self.ASTAR_ON_PATH_M
         info["on_astar"] = on_astar
         if self.THREAT_GATE_ENABLED:
             path_w = (
@@ -875,7 +779,6 @@ class RouteCurriculumEnv(gym.Env):
             rw_path = current_path_penalty * path_err_normalized
             reward += rw_path
 
-        # Çok büyük A* sapması → episode bitir (ROUTE_PATH_ERROR_TERMINATE=0 ile kapat)
         if not terminated and current_path_terminate > 0.0:
             with self.cond:
                 has_plan = len(self.a_star_poses) >= 2
@@ -885,7 +788,6 @@ class RouteCurriculumEnv(gym.Env):
                 terminated = True
                 info["path_drift_terminate"] = True
 
-        # r_threat_proximity (adım sonrası skor; kapı hesabı yukarıda max_threat_pre ile)
         max_threat = float(np.max(self.threat_scores))
         if stage_for_gate == 1:
             threat_penalty_scale = -0.5
@@ -896,15 +798,8 @@ class RouteCurriculumEnv(gym.Env):
         rw_threat = threat_penalty_scale * max_threat
         reward += rw_threat
 
-        # r_smooth
-        action_delta = float(np.linalg.norm(action - self.prev_action))
-        rw_smooth = -0.05 * action_delta
-        reward += rw_smooth
-
-        # r_time
         reward += rw_time
 
-        # truncation
         if self.step_count >= self.MAX_EPISODE_STEPS:
             truncated = True
             info["timeout"] = True
@@ -927,7 +822,6 @@ class RouteCurriculumEnv(gym.Env):
         info["rw_astar_return"] = rw_astar_return
         info["rw_path_drift"] = rw_path_drift
         info["rw_threat"] = rw_threat
-        info["rw_smooth"] = rw_smooth
         info["rw_time"] = rw_time
 
         obs = self._get_obs()
