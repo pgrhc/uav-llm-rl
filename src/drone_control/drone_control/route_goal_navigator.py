@@ -21,6 +21,7 @@ import random
 import json
 import os
 import threading
+from collections import deque
 
 # Curriculum maze sabitleri (maze_curriculum_manager ile uyumlu)
 ROWS, COLS = 20, 20
@@ -28,6 +29,12 @@ CELL_SIZE = 5.0
 DRONE_SPAWN_CELL = (ROWS // 2, COLS // 2)
 WALLS_PATH = "/home/ubuntu/Desktop/maze_walls.json"
 ORIGIN = (0.0, 0.0)
+
+# Minimum Manhattan-cell distance for goal selection.
+# 8 cells × 5 m = 40 m minimum — forces the agent to navigate long sections.
+MIN_GOAL_DIST_CELLS = 8
+# How many recently visited goals to remember (avoids exact repetition).
+RECENT_GOAL_MEMORY = 12
 
 def _maze_origin():
     sr, sc = DRONE_SPAWN_CELL
@@ -115,9 +122,8 @@ class RouteGoalNavigator(Node):
         )
         qos_goal = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST, depth=1,
         )
 
         self.path_pub = self.create_publisher(Path, "/plan", qos_path)
@@ -135,12 +141,12 @@ class RouteGoalNavigator(Node):
         self.goal_cell = None
         self.current_path_cells = []
 
-        self.visited = set()
-        self.visited.add(self._spawn_cell)
-        self._unvisited_cache = None
+        # Far-goal memory: remember recent goals to avoid exact repetition
+        self._recent_goals: deque = deque(maxlen=RECENT_GOAL_MEMORY)
 
         self.get_logger().info(
-            f"RouteGoalNavigator baslatildi | Stage {self.current_stage} | Origin 0.0"
+            f"RouteGoalNavigator baslatildi | Stage {self.current_stage} | "
+            f"MIN_GOAL_DIST={MIN_GOAL_DIST_CELLS} cells ({MIN_GOAL_DIST_CELLS * CELL_SIZE:.0f}m)"
         )
 
         self.timer = self.create_timer(0.5, self._loop)
@@ -156,16 +162,13 @@ class RouteGoalNavigator(Node):
         self.current_stage = new_stage
         self.walls = _load_walls()
 
-        self.visited.clear()
-        self.visited.add(self._spawn_cell)
-        self._unvisited_cache = None
+        # Reset navigation state but keep goal memory for variety
+        self._recent_goals.clear()
         self.navigating = False
         self.goal_cell = None
         self.current_path_cells = []
 
-        self.get_logger().info(
-            f"Stage degisti → {new_stage} | Origin 0.0"
-        )
+        self.get_logger().info(f"Stage degisti → {new_stage}")
 
     # ------------------------------------------------------------------ #
     # Odometry
@@ -175,11 +178,7 @@ class RouteGoalNavigator(Node):
             self.pos[0] = msg.pose.pose.position.x
             self.pos[1] = msg.pose.pose.position.y
             self.pos[2] = msg.pose.pose.position.z
-            x, y = self.pos[0], self.pos[1]
         self.odom_ok = True
-        cell = _world_to_cell(x, y)
-        self.visited.add(cell)
-        self._unvisited_cache = None
 
     # ------------------------------------------------------------------ #
     # Main loop
@@ -198,11 +197,8 @@ class RouteGoalNavigator(Node):
             dist = math.hypot(x - gx, y - gy)
             if dist < ARRIVAL_DIST:
                 self.get_logger().info(
-                    f"Hedefe ulasildi: {goal_cell} | "
-                    f"Gezilen: {len(self.visited)}/{ROWS * COLS}"
+                    f"Hedefe ulasildi: {goal_cell}  recent_count={len(self._recent_goals)}"
                 )
-                self.visited.add(goal_cell)
-                self._unvisited_cache = None
                 self.navigating = False
                 self._pick_next_goal(curr_cell)
         elif not self.navigating:
@@ -211,65 +207,77 @@ class RouteGoalNavigator(Node):
         if self.current_path_cells:
             self._publish_path(self.current_path_cells)
 
+
     # ------------------------------------------------------------------ #
-    # Goal selection (frontier-based)
+    # Goal selection (far-goal strategy)
     # ------------------------------------------------------------------ #
     def _pick_next_goal(self, curr_cell):
-        frontiers = self._get_frontiers(curr_cell)
-        if frontiers:
-            goal = random.choice(frontiers)
-        else:
-            goal = self._nearest_unvisited(curr_cell)
-            if goal is None:
-                self.visited.clear()
-                self.visited.add(curr_cell)
-                self._unvisited_cache = None
-                goal = self._nearest_unvisited(curr_cell)
+        """Pick a goal cell at least MIN_GOAL_DIST_CELLS away from curr_cell.
 
-        if goal is None:
+        Strategy:
+          1. Build a candidate list of ALL cells >= MIN_GOAL_DIST_CELLS away.
+          2. Exclude recently used goals to prevent repetition.
+          3. If no candidates remain (very small maze), halve the requirement.
+          4. Validate with A*; retry up to MAX_ATTEMPTS times.
+        """
+        MAX_ATTEMPTS = 8
+        min_dist = MIN_GOAL_DIST_CELLS
+
+        for attempt in range(MAX_ATTEMPTS):
+            candidates = [
+                (r, c)
+                for r in range(self._rows)
+                for c in range(self._cols)
+                if abs(r - curr_cell[0]) + abs(c - curr_cell[1]) >= min_dist
+                and (r, c) not in self._recent_goals
+            ]
+            if not candidates:
+                # Relax: forget recent goals or lower distance floor
+                if self._recent_goals:
+                    self._recent_goals.clear()
+                    continue
+                min_dist = max(4, min_dist // 2)
+                continue
+
+            goal = random.choice(candidates)
+            path_cells = astar(self.walls, curr_cell, goal, self._rows, self._cols)
+            if not path_cells:
+                self.get_logger().warn(f"A* yol bulamadi: {curr_cell} → {goal}, yeniden deneniyor")
+                continue  # try another random far cell
+
+            # Commit to this goal
+            self._recent_goals.append(goal)
+            self.current_path_cells = path_cells
+            self._publish_path(path_cells)
+            self._publish_goal(goal)
+            self.goal_cell = goal
+            self.navigating = True
+
+            gx, gy = _cell_to_world(*goal)
+            dist_m = math.hypot(
+                gx - _cell_to_world(*curr_cell)[0],
+                gy - _cell_to_world(*curr_cell)[1]
+            )
+            self.get_logger().info(
+                f"Yeni hedef: {goal}  dist={dist_m:.0f}m  yol={len(path_cells)} adim  "
+                f"Stage {self.current_stage}  recent={len(self._recent_goals)}"
+            )
             return
 
-        self._unvisited_cache = None
-        path_cells = astar(self.walls, curr_cell, goal, self._rows, self._cols)
-        if not path_cells:
-            self.get_logger().warn(f"A* yol bulamadi: {curr_cell} -> {goal}")
-            self.visited.add(goal)
-            self._unvisited_cache = None
-            return
-
-        self.current_path_cells = path_cells
-        self._publish_path(path_cells)
-        self._publish_goal(goal)
-        self.goal_cell = goal
-        self.navigating = True
-
-        self.get_logger().info(
-            f"Yeni hedef: {goal} | Yol: {len(path_cells)} adim | "
-            f"Stage {self.current_stage}"
-        )
-
-    def _get_frontiers(self, cell):
-        r, c = cell
-        return [
-            (r + dr, c + dc)
-            for d, (dr, dc) in DIRS_RC.items()
-            if not self.walls[r][c][d]
-            and 0 <= r + dr < self._rows and 0 <= c + dc < self._cols
-            and (r + dr, c + dc) not in self.visited
-        ]
-
-    def _nearest_unvisited(self, curr_cell):
-        if self._unvisited_cache is None:
-            all_cells = {(r, c) for r in range(self._rows) for c in range(self._cols)}
-            self._unvisited_cache = all_cells - self.visited
-        unvisited = sorted(
-            self._unvisited_cache,
-            key=lambda nb: abs(nb[0] - curr_cell[0]) + abs(nb[1] - curr_cell[1]),
-        )
-        if not unvisited:
-            return None
-        candidates = unvisited[:min(3, len(unvisited))]
-        return random.choice(candidates)
+        self.get_logger().warn("Uygun uzak hedef bulunamadi, yakın fallback.")
+        # Fallback: any reachable cell
+        for r in range(self._rows):
+            for c in range(self._cols):
+                if (r, c) == curr_cell:
+                    continue
+                path_cells = astar(self.walls, curr_cell, (r, c), self._rows, self._cols)
+                if path_cells:
+                    self.current_path_cells = path_cells
+                    self._publish_path(path_cells)
+                    self._publish_goal((r, c))
+                    self.goal_cell = (r, c)
+                    self.navigating = True
+                    return
 
     # ------------------------------------------------------------------ #
     # Publishing

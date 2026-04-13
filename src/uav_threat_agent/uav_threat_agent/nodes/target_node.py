@@ -136,18 +136,24 @@ class ThreatTargetNode(Node):
 
                 raw_risk = np.clip(dist_score + speed_score, 0.0, 1.0)
 
-                # 3) Class-based factor
-                if class_id == 0:  # Unknown
+                # 3) Class-based threat factor
+                if class_id == 1:      # Drone — fast, agile, high threat
+                    c_factor = 1.0
+                elif class_id == 3:    # FixedWing — fast approach, high threat
+                    c_factor = 0.9
+                elif class_id == 4:    # Person — ground obstacle
+                    c_factor = 0.85
+                elif class_id == 2:    # Bird — moderate threat
+                    c_factor = 0.7
+                elif class_id == 0:    # Unknown
                     if closing_speed > 0.3:
                         c_factor = 0.8
                     elif closing_speed > 0.1:
-                        c_factor = 0.4
+                        c_factor = 0.5
                     else:
-                        c_factor = 0.05
-                elif class_id == 4:  # Person
-                    c_factor = 0.9
+                        c_factor = 0.2
                 else:
-                    c_factor = 0.0
+                    c_factor = 0.3
 
                 # 4) Optional confidence scaling
                 # İstersen confidence'i kapatabilirsin.

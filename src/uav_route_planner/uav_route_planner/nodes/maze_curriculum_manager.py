@@ -24,7 +24,7 @@ DRONE_SPAWN_CELL         = (ROWS // 2, COLS // 2)
 AVOID_SPAWN_RADIUS_CELLS = 1.0
 
 MIN_ACTORS               = 40
-MAX_ACTORS               = 100
+MAX_ACTORS               = 350
 
 LONG_CORRIDOR_BONUS_THRESHOLD = 4
 MIN_SPAWN_DIST           = 3.0
@@ -248,6 +248,13 @@ def sample_pts(cor, count):
 def dist2(a, b):
     return (a[0]-b[0])**2 + (a[1]-b[1])**2
 
+def cell_center_world(r, c):
+    """Convert maze cell (r, c) to world (x, y) — matching route_goal_navigator."""
+    sr, sc = DRONE_SPAWN_CELL
+    ox = -(sc + 0.5) * CELL_SIZE
+    oy = -(sr + 0.5) * CELL_SIZE
+    return ox + (c + 0.5) * CELL_SIZE, oy + (r + 0.5) * CELL_SIZE
+
 def far_enough(x, y, pos, md):
     return all(dist2((x, y), (px, py)) >= md**2 for px, py in pos)
 
@@ -360,16 +367,20 @@ class CurriculumManager:
         print(f"{'='*55}")
 
         if stage == 1:
-            self._remove_all()
-            print("Stage 1: Aktor yok.")
+           
+            self._spawn_systematic(STATIC_ACTORS, label="static", spacing_cells=1)
 
         elif stage == 2:
             self._remove_all()
-            self._spawn(STATIC_ACTORS, label="static")
+            # Stage 2: dynamic humans only — moving threats
+            self._spawn_systematic(DYNAMIC_ACTORS, label="dynamic", spacing_cells=1)
 
         elif stage == 3:
-            self._remove_all()
-            self._spawn(DYNAMIC_ACTORS, label="dynamic")
+            
+            # Stage 3: mix of static + dynamic threats
+            self._spawn_systematic(
+                STATIC_ACTORS, label="mixed", spacing_cells=1
+            )
 
         else:
             print(f"Unknown stage: {stage}")
@@ -389,6 +400,73 @@ class CurriculumManager:
                 self._spawned.pop(n, None)
             time.sleep(0.01)
         print("Tum aktorler silindi.")
+
+    def _spawn_systematic(self, catalog: list, label: str, spacing_cells: int = 2):
+        """Place actors every `spacing_cells` cells along every corridor.
+
+        This guarantees the agent ALWAYS encounters obstacles — unlike
+        random placement which may cluster or leave large clear gaps.
+        spacing_cells=2 means one actor every 10 m (2 × CELL_SIZE=5 m).
+        """
+        if self._walls is None:
+            print("Walls ayarlanmamis!")
+            return
+
+        sr, sc = DRONE_SPAWN_CELL
+        used_pos: list[tuple[float, float]] = []
+        spawned_n = 0
+        actor_idx = 0
+        print(f"Hedef '{label}' (systematic, spacing={spacing_cells} cells):")
+
+        cors = collect_corridors(self._walls, ROWS, COLS, min_len=2)
+        random.shuffle(cors)  # randomise corridor order so layout varies each run
+
+        for cor in cors:
+            if near_spawn(cor, sr, sc, AVOID_SPAWN_RADIUS_CELLS):
+                continue
+            (r1, c1), (r2, c2), is_h = cor
+
+            if is_h:
+                # Horizontal corridor: walk columns at stride `spacing_cells`
+                cells = list(range(min(c1, c2), max(c1, c2) + 1, spacing_cells))
+                actor_positions = [
+                    (cell_center_world(r1, cc), cell_center_world(r1, cc + 1 if cc + 1 <= max(c1, c2) else cc))
+                    for cc in cells
+                ]
+            else:
+                # Vertical corridor: walk rows at stride `spacing_cells`
+                cells = list(range(min(r1, r2), max(r1, r2) + 1, spacing_cells))
+                actor_positions = [
+                    (cell_center_world(rr, c1), cell_center_world(rr + 1 if rr + 1 <= max(r1, r2) else rr, c1))
+                    for rr in cells
+                ]
+
+            for (x1, y1), (x2, y2) in actor_positions:
+                if not far_enough(x1, y1, used_pos, MIN_SPAWN_DIST):
+                    continue
+
+                p    = random.choice(catalog).copy()
+                sfx  = "s" if p["type"] == "static" else "d"
+                name = f"human_{sfx}_{actor_idx}_{random.randint(100, 999)}"
+                actor_idx += 1
+
+                sdf = build_actor_sdf(name, p, x1, y1, x2, y2, is_h)
+                if not sdf:
+                    continue
+                ok = spawn_sdf_model(name, sdf)
+                if ok:
+                    used_pos.append((x1, y1))
+                    with self._lock:
+                        self._spawned[name] = (x1, y1, 0.0, p["type"])
+                    spawned_n += 1
+                time.sleep(SPAWN_DELAY_SEC)
+                if spawned_n >= MAX_ACTORS:
+                    break
+            
+            if spawned_n >= MAX_ACTORS:
+                break
+
+        print(f"'{label}' {spawned_n} aktor spawn edildi (systematic).")
 
     def _spawn(self, catalog: List[dict], label: str):
         if self._walls is None:
@@ -527,7 +605,6 @@ def main(args=None):
     mgr.set_walls(walls)
 
     node = MazeCurriculumNode(mgr)
-
     print(
         "\nROS2 node calisiyor. Train basladiginda stage komutlarini bekliyor...\n"
         f"  SUB  {TOPIC_SET_STAGE}   <- CurriculumScheduler publish eder\n"

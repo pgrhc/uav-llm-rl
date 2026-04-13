@@ -13,7 +13,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, String, Float32
 from nav_msgs.msg import Odometry, OccupancyGrid, Path
 from geometry_msgs.msg import PoseStamped, PoseArray
 
@@ -50,6 +50,37 @@ class RouteCurriculumEnv(gym.Env):
     LIDAR_START_IDX = 3
     LIDAR_END_IDX = 39
     NUM_PATH_WPS = 5
+
+    # ── Threat token layout (threat_vector[39:74] = 5 × 7) ──────────────────
+    THREAT_TOKEN_OFFSET  = 39   # first token starts here in threat_vector
+    THREAT_TOKEN_SIZE    = 7
+    THREAT_NUM_OBJECTS   = 5
+    # Field indices within each 7-element token
+    TK_CLASS_ID   = 0
+    TK_DIST_NORM  = 1   # normalized dist; multiply by LIDAR_MAX_RANGE for metres
+    TK_CLOSING    = 2   # closing speed (positive = approaching)
+    TK_SIN_BEAR   = 3   # sin(bearing) in drone frame
+    TK_COS_BEAR   = 4   # cos(bearing) in drone frame
+    TK_CONFIDENCE = 5
+    TK_VALID      = 6   # 1.0 = valid object
+
+    # ── Evasion reward gating & scales ──────────────────────────────────────
+    EVASION_THREAT_GATE    = 0.4    # min max_threat score to activate evasion rewards
+    EVASION_DIST_MAX_M     = 8.0    # only reward evasion when threat closer than this
+    THREAT_AWAY_SCALE      = 1.0    # reward per metre of dist increase from nearest threat
+    LATERAL_ESCAPE_SCALE   = 0.5    # reward per metre of lateral movement vs threat axis
+    LATERAL_MIN_MOVE_M     = 0.03   # min drone movement to compute lateral escape
+
+    # ── Dormant RL state machine thresholds ──────────────────────────────────
+    RL_D_ACTIVATE    = 6.0    # m  — activate when nearest threat closer than this
+    RL_D_RELEASE     = 10.0   # m  — deactivate (hysteresis gap, must be > RL_D_ACTIVATE)
+    RL_RISK_ACTIVATE = 0.45   # composite risk score to wake RL
+    RL_RISK_RELEASE  = 0.20   # composite risk score to sleep RL
+    RL_RISK_W_DIST   = 0.5    # weight for distance component in risk score
+    RL_RISK_W_THREAT = 0.5    # weight for threat score component in risk score
+    # Fallback wake-up for cases where threat token distance is missing/stale but
+    # target scores clearly indicate danger (prevents permanent dormant mode).
+    RL_SCORE_ACTIVATE = float(os.environ.get("ROUTE_RL_SCORE_ACTIVATE", "0.23"))
 
     DRONE_MODEL_NAME = "x500_mono_cam_0"
     GZ_WORLD_NAME = "default"
@@ -88,6 +119,7 @@ class RouteCurriculumEnv(gym.Env):
         "no",
     )
     HYBRID_Z_CLIP = float(os.environ.get("ROUTE_HYBRID_Z_CLIP", "0.5"))
+    EP_GOAL_MAX_M = float(os.environ.get("ROUTE_EP_GOAL_MAX_M", "5.0"))
 
     ACTOR_COLLISION_RADIUS = 1.5
     ACTOR_COLLISION_Z_MAX = 3.5
@@ -163,6 +195,14 @@ class RouteCurriculumEnv(gym.Env):
 
         self._sb3_num_timesteps = 0
 
+        # ── Evasion reward state ─────────────────────────────────────────
+        self._prev_drone_x: float = 0.0
+        self._prev_drone_y: float = 0.0
+        self._prev_nearest_threat_dist: float | None = None  # metres
+
+        # ── Dormant RL state ───────────────────────────────────────────
+        self._rl_mode: str = "DORMANT"  # "DORMANT" | "ACTIVE"
+
         self._rclpy_initialized = False
         if not rclpy.ok():
             rclpy.init()
@@ -206,6 +246,9 @@ class RouteCurriculumEnv(gym.Env):
 
         self.waypoint_pub = self.node.create_publisher(
             PoseStamped, "/route/waypoint_desired", 10)
+        # Debug publishers for dormant RL monitoring
+        self._rl_mode_pub = self.node.create_publisher(String, "/rl_avoidance/mode", 10)
+        self._rl_risk_pub = self.node.create_publisher(Float32, "/rl_avoidance/risk", 10)
 
         self._spin_thread = threading.Thread(target=self._spin, daemon=True)
         self._spin_thread.start()
@@ -403,6 +446,39 @@ class RouteCurriculumEnv(gym.Env):
             return 0.0
         return float(1.0 / (1.0 + math.exp(-x)))
 
+    def _nearest_threat_info(self, threat_vec: np.ndarray):
+        """Parse object tokens from threat_vector and return nearest valid threat.
+
+        Returns:
+            (dist_m, sin_bearing, cos_bearing)  – in drone body frame
+            None                                 – no valid object detected
+
+        Token layout per object (THREAT_TOKEN_SIZE = 7):
+            [class_id, dist_norm, closing_speed, sin_bear, cos_bear, confidence, is_valid]
+        dist_norm is normalised to [0,1]; multiply by LIDAR_MAX_RANGE for metres.
+        """
+        best_dist_m = float("inf")
+        best_sin = 0.0
+        best_cos = 1.0
+        found = False
+
+        for i in range(self.THREAT_NUM_OBJECTS):
+            base = self.THREAT_TOKEN_OFFSET + i * self.THREAT_TOKEN_SIZE
+            if base + self.THREAT_TOKEN_SIZE > len(threat_vec):
+                break
+            if threat_vec[base + self.TK_VALID] < 0.5:
+                continue  # invalid / empty slot
+            dist_m = float(threat_vec[base + self.TK_DIST_NORM]) * self.LIDAR_MAX_RANGE
+            if dist_m < best_dist_m:
+                best_dist_m = dist_m
+                best_sin   = float(threat_vec[base + self.TK_SIN_BEAR])
+                best_cos   = float(threat_vec[base + self.TK_COS_BEAR])
+                found = True
+
+        return (best_dist_m, best_sin, best_cos) if found else None
+
+
+
     def _build_a_star_obs(self) -> np.ndarray:
         result = np.zeros(self.NUM_PATH_WPS * 2, dtype=np.float32)
         with self.cond:
@@ -423,6 +499,39 @@ class RouteCurriculumEnv(gym.Env):
             count += 1
 
         return result
+
+    def _pick_episode_goal(self) -> tuple:
+        with self.cond:
+            real_gx, real_gy = self.goal_x, self.goal_y
+            dx, dy = self.drone_x, self.drone_y
+            poses = list(self.a_star_poses)
+
+        if real_gx is None:
+            return real_gx, real_gy
+
+        direct_dist = math.hypot(real_gx - dx, real_gy - dy)
+        if direct_dist <= self.EP_GOAL_MAX_M:
+            return real_gx, real_gy   
+        if not poses:
+            return real_gx, real_gy
+
+        acc = 0.0
+        prev_x, prev_y = dx, dy
+        for wx, wy in poses:
+            seg = math.hypot(wx - prev_x, wy - prev_y)
+            if acc + seg >= self.EP_GOAL_MAX_M:
+                remain = self.EP_GOAL_MAX_M - acc
+                frac = remain / max(seg, 1e-9)
+                ix = prev_x + frac * (wx - prev_x)
+                iy = prev_y + frac * (wy - prev_y)
+                self.node.get_logger().debug(
+                    f"EP goal capped at {self.EP_GOAL_MAX_M:.1f}m "
+                    f"(real: {direct_dist:.1f}m) → ({ix:.2f}, {iy:.2f})"
+                )
+                return ix, iy
+            acc += seg
+            prev_x, prev_y = wx, wy
+        return poses[-1]
 
     def _get_obs(self) -> dict:
         with self.cond:
@@ -469,7 +578,7 @@ class RouteCurriculumEnv(gym.Env):
             return True
 
         stage = self._stage_from_position(self.drone_x) if self.unified_maze else self.curriculum_stage
-        if stage == 3 and self._check_actor_collision():
+        if stage in (2, 3) and self._check_actor_collision():
             return True
 
         return False
@@ -590,10 +699,17 @@ class RouteCurriculumEnv(gym.Env):
 
         if not obs_ok:
             self.node.get_logger().warn("Reset sonrası obs alınamadı, sıfır obs ile devam.")
-
+        ep_gx, ep_gy = self._pick_episode_goal()
         with self.cond:
-            self._ep_goal_x = self.goal_x
-            self._ep_goal_y = self.goal_y
+            self._ep_goal_x = ep_gx
+            self._ep_goal_y = ep_gy
+
+        # Reset evasion tracking state at episode start
+        with self.cond:
+            self._prev_drone_x = self.drone_x
+            self._prev_drone_y = self.drone_y
+        self._prev_nearest_threat_dist = None
+        self._rl_mode = "DORMANT"   # always start dormant; activate only when threat is real
 
         self.prev_dist_to_goal = self._dist_to_goal()
         if not np.isfinite(self.prev_dist_to_goal):
@@ -602,8 +718,57 @@ class RouteCurriculumEnv(gym.Env):
 
     def step(self, action: np.ndarray):
         self.step_count += 1
-        action = np.clip(action, -1.0, 1.0)
-        self.smoothed_action = self.action_ema_alpha * action + (1.0 - self.action_ema_alpha) * self.smoothed_action
+        raw_action = np.asarray(np.clip(action, -1.0, 1.0), dtype=np.float32)
+        effective_action = raw_action.copy()
+
+        # ── DORMANT STATE MACHINE ─────────────────────────────────────────────
+        # Risk = weighted combination of threat score + proximity.
+        # Evaluated BEFORE EMA so the state machine drives action zeroing.
+        with self.cond:
+            _sc = self.threat_scores.copy()
+            _tv = self.threat_vector.copy()
+        _risk_max_threat = float(np.max(_sc))
+        _risk_info = self._nearest_threat_info(_tv)
+        _risk_dist_m = _risk_info[0] if _risk_info is not None else float("inf")
+        _risk_score = (
+            self.RL_RISK_W_DIST * max(0.0, 1.0 - _risk_dist_m / self.RL_D_ACTIVATE)
+            + self.RL_RISK_W_THREAT * _risk_max_threat
+        )
+        if self._rl_mode == "DORMANT":
+            # Primary activation: risk + geometric proximity.
+            # Fallback activation: high threat score even if distance token is absent.
+            proximity_trigger = _risk_dist_m < self.RL_D_ACTIVATE
+            score_trigger = _risk_max_threat >= self.RL_SCORE_ACTIVATE
+            if (
+                (_risk_score >= self.RL_RISK_ACTIVATE and proximity_trigger)
+                or score_trigger
+            ):  
+                self._rl_mode = "ACTIVE"
+                self.node.get_logger().info(
+                    f"[RL] DORMANT→ACTIVE  risk={_risk_score:.2f}  "
+                    f"dist={_risk_dist_m:.1f}m  threat={_risk_max_threat:.2f}"
+                    f"  (prox={int(proximity_trigger)} score={int(score_trigger)})"
+                )
+        else:  # ACTIVE
+            if (
+                _risk_dist_m > self.RL_D_RELEASE
+                and _risk_max_threat < self.RL_RISK_RELEASE
+            ):
+                self._rl_mode = "DORMANT"
+                self.node.get_logger().info(
+                    f"[RL] ACTIVE→DORMANT  risk={_risk_score:.2f}  "
+                    f"dist={_risk_dist_m:.1f}m  threat={_risk_max_threat:.2f}"
+                )
+
+        # When dormant: force action to zero so drone doesn't move
+        rw_dormant_action_penalty = 0.0
+        if self._rl_mode == "DORMANT":
+            effective_action = np.zeros(4, dtype=np.float32)
+            # Give a small penalty if policy outputs non-zero raw_action in dormant state
+            rw_dormant_action_penalty = -0.02 * float(np.sum(np.abs(raw_action)))
+        # ────────────────────────────────────────────────────────────
+
+        self.smoothed_action = self.action_ema_alpha * effective_action + (1.0 - self.action_ema_alpha) * self.smoothed_action
 
         with self.cond:
             max_threat_pre = float(np.max(self.threat_scores))
@@ -612,21 +777,21 @@ class RouteCurriculumEnv(gym.Env):
         stage_for_gate = (
             self._stage_from_position(px) if self.unified_maze else self.curriculum_stage
         )
-        
+
         if stage_for_gate == 1:
-            current_step_size = 0.25   
-            current_yaw_scale = 0.20 
+            current_step_size = 0.25
+            current_yaw_scale = 0.20
             current_path_terminate = max(4.0, self.PATH_ERROR_TERMINATE_M)
             current_path_penalty = -0.5
             current_path_high_threat = 0.3
         elif stage_for_gate == 2:
-            current_step_size = 0.25         
+            current_step_size = 0.45
             current_yaw_scale = 0.15
             current_path_terminate = max(6.0, self.PATH_ERROR_TERMINATE_M)
-            current_path_penalty = -2.0
+            current_path_penalty = -0.5
             current_path_high_threat = 0.2
-        else: 
-            current_step_size = 0.30
+        else:
+            current_step_size = 0.60
             current_yaw_scale = 0.25
             current_path_terminate = max(8.0, self.PATH_ERROR_TERMINATE_M)
             current_path_penalty = -0.5
@@ -646,9 +811,9 @@ class RouteCurriculumEnv(gym.Env):
             self.THREAT_GATE_K,
         )
         if stage_for_gate == 1:
-            gate_apply = 0.8      
+            gate_apply = 0.8
         elif stage_for_gate == 2:
-            gate_apply = max(0.6, threat_gate) 
+            gate_apply = max(0.6, threat_gate)
         else:
             gate_apply = threat_gate if self.THREAT_GATE_ENABLED else 1.0
 
@@ -668,7 +833,19 @@ class RouteCurriculumEnv(gym.Env):
             poses = list(self.a_star_poses)
             ddx, ddy = self.drone_x, self.drone_y
 
-        use_hybrid = self.HYBRID_ASTAR_BASELINE and bool(poses)
+        # Control authority split:
+        # - DORMANT: keep A* hybrid baseline behavior.
+        # - ACTIVE: bypass A* anchor entirely so RL has full local control authority.
+        # This is required for learning meaningful avoidance maneuvers.
+        use_hybrid = (
+            self.HYBRID_ASTAR_BASELINE
+            and bool(poses)
+            and self._rl_mode == "DORMANT"
+        )
+        if self._rl_mode == "ACTIVE":
+            control_source = "RL"
+        else:
+            control_source = "ASTAR"
         if use_hybrid:
             start = self._astar_forward_start_index(poses, ddx, ddy)
             lx, ly = poses[start]
@@ -693,15 +870,17 @@ class RouteCurriculumEnv(gym.Env):
                 ) * self.MAX_YAW_RATE * current_yaw_scale * gate_apply
             else:
                 wp_yaw = self.drone_yaw + dyaw * gate_apply
-                
-            self._publish_waypoint(wp_x, wp_y, wp_z, wp_yaw, is_residual=True)
+            # DORMANT: publish nothing — follow_path falls back to A* within ROUTE_WP_TIMEOUT
+            if self._rl_mode == "ACTIVE":
+                self._publish_waypoint(wp_x, wp_y, wp_z, wp_yaw, is_residual=True)
         else:
             wp_x = ddx + world_dx
             wp_y = ddy + world_dy
             wp_z = self.drone_z + dz * gate_apply
             wp_yaw = self.drone_yaw + dyaw * gate_apply
+            if self._rl_mode == "ACTIVE":
+                self._publish_waypoint(wp_x, wp_y, wp_z, wp_yaw, is_residual=False)
 
-            self._publish_waypoint(wp_x, wp_y, wp_z, wp_yaw, is_residual=False)
         obs_sync_ok = self._wait_obs(timeout=0.40, step_mode=True)
 
         if self.unified_maze:
@@ -718,8 +897,15 @@ class RouteCurriculumEnv(gym.Env):
             "threat_effective_max": effective_threat,
             "synthetic_threat_delta": synth_delta,
             "stage_for_gate": stage_for_gate,
+            
         }
-
+        if self.step_count % 50 == 0:
+            self.node.get_logger().info(
+                f"[GATE] mode={self._rl_mode} "
+                f"dist={_risk_dist_m:.2f} "
+                f"threat={_risk_max_threat:.2f} "
+                f"risk={_risk_score:.2f}"
+            )
         dist = self._dist_to_goal()
 
         rw_progress = 0.0
@@ -729,23 +915,25 @@ class RouteCurriculumEnv(gym.Env):
         rw_astar_return = 0.0
         rw_path_drift = 0.0
         rw_threat = 0.0
-        rw_time = 0.0   
+        rw_time = 0.0
         rw_stall = 0.0
-        if self.prev_dist_to_goal is not None and self._ep_goal_x is not None:  
-            progress = self.prev_dist_to_goal - dist
 
+        reward += rw_dormant_action_penalty
+
+        # ── Progress & stall: only credit RL when it is actively in control ────────
+        if self._rl_mode == "ACTIVE" and self.prev_dist_to_goal is not None and self._ep_goal_x is not None:
+            progress = self.prev_dist_to_goal - dist
             if not np.isfinite(progress):
                 progress = 0.0
-
             rw_progress = 8.0 * progress
             reward += rw_progress
-
             if progress < 0.01:
                 rw_stall = -0.2
                 reward += rw_stall
 
+        # ── Collision & goal: always apply (safety + terminal signal) ──────────
         if self._check_collision(wp_x, wp_y):
-            rw_collision = -100.0
+            rw_collision = -20.0
             reward += rw_collision
             terminated = True
             info["collision"] = True
@@ -758,27 +946,30 @@ class RouteCurriculumEnv(gym.Env):
             info["success"] = True
             self.episode_successes += 1
 
+        # ── Path tracking: only in ACTIVE mode ──────────────────────────────
         path_err = self._dist_to_nearest_astar_wp()
         path_err_normalized = min(path_err / 5.0, 1.0)
         on_astar = path_err < self.ASTAR_ON_PATH_M
         info["on_astar"] = on_astar
-        if self.THREAT_GATE_ENABLED:
-            path_w = (
-                self.PATH_ERR_SCALE_LOW_THREAT * (1.0 - threat_gate)
-                + current_path_high_threat * threat_gate
-            )
-            rw_path = current_path_penalty * path_err_normalized * path_w
-            reward += rw_path
-            if (
-                threat_gate < self.ASTAR_RETURN_GATE_MAX
-                and path_err < self.ASTAR_ON_PATH_M
-            ):
-                rw_astar_return = self.ASTAR_RETURN_BONUS
-                reward += rw_astar_return
-        else:
-            rw_path = current_path_penalty * path_err_normalized
-            reward += rw_path
+        if self._rl_mode == "ACTIVE":
+            if self.THREAT_GATE_ENABLED:
+                path_w = (
+                    self.PATH_ERR_SCALE_LOW_THREAT * (1.0 - threat_gate)
+                    + current_path_high_threat * threat_gate
+                )
+                rw_path = current_path_penalty * path_err_normalized * path_w
+                reward += rw_path
+                if (
+                    threat_gate < self.ASTAR_RETURN_GATE_MAX
+                    and path_err < self.ASTAR_ON_PATH_M
+                ):
+                    rw_astar_return = self.ASTAR_RETURN_BONUS
+                    reward += rw_astar_return
+            else:
+                rw_path = current_path_penalty * path_err_normalized
+                reward += rw_path
 
+        # ── Path-drift termination: always (safety) ─────────────────────────
         if not terminated and current_path_terminate > 0.0:
             with self.cond:
                 has_plan = len(self.a_star_poses) >= 2
@@ -788,6 +979,7 @@ class RouteCurriculumEnv(gym.Env):
                 terminated = True
                 info["path_drift_terminate"] = True
 
+        # ── Threat penalty: always (awareness must exist in both modes) ────────
         max_threat = float(np.max(self.threat_scores))
         if stage_for_gate == 1:
             threat_penalty_scale = -0.5
@@ -798,6 +990,48 @@ class RouteCurriculumEnv(gym.Env):
         rw_threat = threat_penalty_scale * max_threat
         reward += rw_threat
 
+        # ── Evasion rewards: only when ACTIVE and threat is real/nearby ───────
+        rw_threat_away    = 0.0
+        rw_lateral_escape = 0.0
+        nearest_threat_dist = float("inf")
+
+        with self.cond:
+            tv = self.threat_vector.copy()
+            cur_dx, cur_dy = self.drone_x, self.drone_y
+            cur_yaw = self.drone_yaw
+
+        threat_info = self._nearest_threat_info(tv)
+
+        if threat_info is not None:
+            nearest_threat_dist, sin_bear, cos_bear = threat_info
+            evasion_active = (
+                self._rl_mode == "ACTIVE"
+                and max_threat >= self.EVASION_THREAT_GATE
+                and nearest_threat_dist <= self.EVASION_DIST_MAX_M
+            )
+            if evasion_active:
+                if self._prev_nearest_threat_dist is not None:
+                    away_delta = nearest_threat_dist - self._prev_nearest_threat_dist
+                    if away_delta > 0.0:
+                        rw_threat_away = self.THREAT_AWAY_SCALE * away_delta
+                        reward += rw_threat_away
+                move_x = cur_dx - self._prev_drone_x
+                move_y = cur_dy - self._prev_drone_y
+                move_speed = math.hypot(move_x, move_y)
+                if move_speed >= self.LATERAL_MIN_MOVE_M:
+                    bearing = math.atan2(sin_bear, cos_bear)
+                    world_angle = cur_yaw + bearing
+                    threat_dir_x = math.cos(world_angle)
+                    threat_dir_y = math.sin(world_angle)
+                    lateral_m = abs(move_x * threat_dir_y - move_y * threat_dir_x)
+                    lateral_frac = lateral_m / max(move_speed, 1e-6)
+                    rw_lateral_escape = self.LATERAL_ESCAPE_SCALE * lateral_frac * move_speed
+                    reward += rw_lateral_escape
+
+        self._prev_drone_x = cur_dx
+        self._prev_drone_y = cur_dy
+        self._prev_nearest_threat_dist = nearest_threat_dist if threat_info is not None else None
+
         reward += rw_time
 
         if self.step_count >= self.MAX_EPISODE_STEPS:
@@ -805,8 +1039,16 @@ class RouteCurriculumEnv(gym.Env):
             info["timeout"] = True
 
         self.prev_dist_to_goal = dist
-        self.prev_action = action.copy()
+        self.prev_action = effective_action.copy()
         self.episode_reward += reward
+
+        # ── Publish dormant-mode debug topics ──────────────────────────────
+        _mode_msg = String()
+        _mode_msg.data = self._rl_mode
+        self._rl_mode_pub.publish(_mode_msg)
+        _risk_msg = Float32()
+        _risk_msg.data = float(_risk_score)
+        self._rl_risk_pub.publish(_risk_msg)
 
         info["path_error"] = path_err
         info["max_threat"] = max_threat
@@ -814,6 +1056,11 @@ class RouteCurriculumEnv(gym.Env):
         info["episode_reward"] = self.episode_reward
         info["episode_collisions"] = self.episode_collisions
         info["episode_successes"] = self.episode_successes
+        info["rl_mode"] = self._rl_mode
+        info["rl_risk_score"] = float(_risk_score)
+        info["rl_risk_dist_m"] = float(_risk_dist_m) if np.isfinite(_risk_dist_m) else -1.0
+        info["rl_risk_max_threat"] = float(_risk_max_threat)
+        info["control_source"] = control_source
         info["rw_progress"] = rw_progress
         info["rw_goal"] = rw_goal
         info["rw_collision"] = rw_collision
@@ -823,6 +1070,12 @@ class RouteCurriculumEnv(gym.Env):
         info["rw_path_drift"] = rw_path_drift
         info["rw_threat"] = rw_threat
         info["rw_time"] = rw_time
+        info["rw_dormant_action_penalty"] = rw_dormant_action_penalty
+        info["rw_threat_away"]    = rw_threat_away
+        info["rw_lateral_escape"] = rw_lateral_escape
+        info["nearest_threat_dist"] = nearest_threat_dist if nearest_threat_dist < float("inf") else -1.0
+        info["raw_action_norm"] = float(np.linalg.norm(raw_action))
+        info["effective_action_norm"] = float(np.linalg.norm(effective_action))
 
         obs = self._get_obs()
         for k, v in obs.items():
@@ -833,6 +1086,7 @@ class RouteCurriculumEnv(gym.Env):
             self.node.get_logger().warn(f"Non-finite reward detected: {reward}, forcing to 0.0")
             reward = 0.0
         return obs, float(reward), terminated, truncated, info
+
 
     def close(self):
         self._running = False

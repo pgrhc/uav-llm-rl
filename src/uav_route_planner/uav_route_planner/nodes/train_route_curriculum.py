@@ -147,7 +147,7 @@ class CurriculumScheduler(BaseCallback):
 
     def __init__(self, verbose=1, stage_pub=None):
         super().__init__(verbose)
-        self.current_stage = 1
+        self.current_stage = 0
         self.stage_ranges = CurriculumScheduler.default_stage_ranges()
         self._stage_pub = stage_pub
         self._actors_spawned = False
@@ -197,6 +197,23 @@ class CurriculumScheduler(BaseCallback):
             except Exception as e:
                 print(f"Aktor spawn hatasi: {e}")
 
+        # ── Approach A: Reset Adam momentum buffers ──────────────────────────
+        # The critic has learned Stage N's value landscape. Its Adam m/v buffers
+        # carry that momentum into Stage N+1, causing the value_loss spike seen
+        # at transitions. Clearing .state resets momentum but keeps learned weights.
+        try:
+            self.model.policy.optimizer.state.clear()
+            print(f"[CurriculumScheduler] Adam optimizer momentum reset for Stage {stage}.")
+        except Exception as e:
+            print(f"[CurriculumScheduler] Optimizer reset failed (non-fatal): {e}")
+
+        # Also clear the episode info buffer so stale Stage N episode stats
+        # don't skew the critic's bootstrapped return estimates.
+        try:
+            self.model.ep_info_buffer.clear()
+        except Exception:
+            pass
+
         self.current_stage = stage
         self.logger.record("curriculum/stage", stage)
 
@@ -219,6 +236,9 @@ _ROUTE_RW_INFO_KEYS = (
     "rw_path_drift",
     "rw_threat",
     "rw_time",
+    "rw_dormant_action_penalty", # new: penalty for non-zero policy output in dormant state
+    "rw_threat_away",      # new: bonus for increasing distance from nearest threat
+    "rw_lateral_escape",   # new: bonus for perpendicular movement vs threat axis
 )
 
 class _RouteEpisodeMetricsMixin:
@@ -232,24 +252,34 @@ class _RouteEpisodeMetricsMixin:
         self.ep_threat_maxes = deque(maxlen=window)
         self.ep_threat_gate_means = deque(maxlen=window)
         self.ep_astar_follow_rates = deque(maxlen=window)
+        self.ep_rl_active_rates = deque(maxlen=window)
+        self.ep_raw_action_norms = deque(maxlen=window)
+        self.ep_effective_action_norms = deque(maxlen=window)
         self.ep_rw_means = {k: deque(maxlen=window) for k in _ROUTE_RW_INFO_KEYS}
         self._step_path_errors = []
         self._step_threat_maxes = []
         self._step_threat_gates = []
         self._step_on_astar = []
+        self._step_rl_active_rates = []
+        self._step_raw_action_norms = []
+        self._step_effective_action_norms = []
         self._step_rw = {k: [] for k in _ROUTE_RW_INFO_KEYS}
 
     def _collect_episode_metrics(self):
         infos = self.locals.get("infos", [])
         dones = self.locals.get("dones", [])
         for i, info in enumerate(infos):
+            done_i = dones[i] if i < len(dones) else False
             self._step_path_errors.append(info.get("path_error", 0.0))
             self._step_threat_maxes.append(info.get("max_threat", 0.0))
             self._step_threat_gates.append(float(info.get("threat_gate", 0.0)))
             self._step_on_astar.append(float(info.get("on_astar", 0.0)))
+            self._step_rl_active_rates.append(1.0 if info.get("rl_mode") == "ACTIVE" else 0.0)
+            self._step_raw_action_norms.append(info.get("raw_action_norm", 0.0))
+            self._step_effective_action_norms.append(info.get("effective_action_norm", 0.0))
             for k in _ROUTE_RW_INFO_KEYS:
                 self._step_rw[k].append(float(info.get(k, 0.0)))
-            if dones[i]:
+            if done_i:
                 self.ep_successes.append(1.0 if info.get("success") else 0.0)
                 self.ep_collisions.append(1.0 if info.get("collision") else 0.0)
                 self.ep_timeouts.append(1.0 if info.get("timeout") else 0.0)
@@ -265,6 +295,13 @@ class _RouteEpisodeMetricsMixin:
                     self.ep_threat_gate_means.append(np.mean(self._step_threat_gates))
                 if self._step_on_astar:
                     self.ep_astar_follow_rates.append(np.mean(self._step_on_astar))
+                if self._step_rl_active_rates:
+                    self.ep_rl_active_rates.append(np.mean(self._step_rl_active_rates))
+                if self._step_raw_action_norms:
+                    self.ep_raw_action_norms.append(np.mean(self._step_raw_action_norms))
+                if self._step_effective_action_norms:
+                    self.ep_effective_action_norms.append(np.mean(self._step_effective_action_norms))
+
                 for k in _ROUTE_RW_INFO_KEYS:
                     buf = self._step_rw[k]
                     if buf:
@@ -275,6 +312,9 @@ class _RouteEpisodeMetricsMixin:
                 self._step_threat_maxes.clear()
                 self._step_threat_gates.clear()
                 self._step_on_astar.clear()
+                self._step_rl_active_rates.clear()
+                self._step_raw_action_norms.clear()
+                self._step_effective_action_norms.clear()
 
 
 class RouteTrainingMonitor(_RouteEpisodeMetricsMixin, BaseCallback):
@@ -347,6 +387,13 @@ class RouteTrainingMonitor(_RouteEpisodeMetricsMixin, BaseCallback):
             self.logger.record(
                 "route/astar_follow_rate", np.mean(self.ep_astar_follow_rates)
             )
+        if len(self.ep_rl_active_rates) > 0:
+            self.logger.record("route/rl_active_rate", np.mean(self.ep_rl_active_rates))
+        if len(self.ep_raw_action_norms) > 0:
+            self.logger.record("action/raw_action_norm", np.mean(self.ep_raw_action_norms))
+        if len(self.ep_effective_action_norms) > 0:
+            self.logger.record("action/effective_action_norm", np.mean(self.ep_effective_action_norms))
+            
         for k in _ROUTE_RW_INFO_KEYS:
             dq = self.ep_rw_means[k]
             if len(dq) > 0:
@@ -585,6 +632,9 @@ class PlotSaverCallback(_RouteEpisodeMetricsMixin, BaseCallback):
             "threat_exposure": float(np.mean(self.ep_threat_maxes)) if self.ep_threat_maxes else 0.0,
             "mean_threat_gate": float(np.mean(self.ep_threat_gate_means)) if self.ep_threat_gate_means else 0.0,
             "astar_follow_rate": float(np.mean(self.ep_astar_follow_rates)) if self.ep_astar_follow_rates else 0.0,
+            "rl_active_rate": float(np.mean(self.ep_rl_active_rates)) if self.ep_rl_active_rates else 0.0,
+            "raw_action_norm": float(np.mean(self.ep_raw_action_norms)) if self.ep_raw_action_norms else 0.0,
+            "effective_action_norm": float(np.mean(self.ep_effective_action_norms)) if self.ep_effective_action_norms else 0.0,
         }
         for k in _ROUTE_RW_INFO_KEYS:
             dq = self.ep_rw_means[k]
@@ -734,7 +784,7 @@ def main(args=None):
         )
     if not HAS_MATPLOTLIB:
         print("Not:    Grafik kaydi icin: pip install matplotlib", flush=True)
-    print("VecEnv:  DummyVecEnv — ROS+SAC ayni proses", flush=True)
+    print("VecEnv:  DummyVecEnv — PPO+ros ayni proses", flush=True)
     print("=" * 60, flush=True)
 
     scheduler_node = None
@@ -761,7 +811,7 @@ def main(args=None):
         "gamma":         0.99,
         "gae_lambda":    0.95,
         "clip_range":    0.2,
-        "ent_coef":      0.01,
+        "ent_coef":      0.05,
         "vf_coef":       0.5,
         "max_grad_norm": 0.5,
     }
