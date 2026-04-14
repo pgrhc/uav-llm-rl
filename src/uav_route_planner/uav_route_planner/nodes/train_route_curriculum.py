@@ -138,16 +138,16 @@ def _signal_handler(sig, frame):
 class CurriculumScheduler(BaseCallback):
     @staticmethod
     def default_stage_ranges():
-        t = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "204800"))
-        s1 = int(os.environ.get("ROUTE_STAGE1_END", "70000"))
-        s2 = int(os.environ.get("ROUTE_STAGE2_END", "140000"))
+        t = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "550000"))
+        s1 = int(os.environ.get("ROUTE_STAGE1_END", "150000"))
+        s2 = int(os.environ.get("ROUTE_STAGE2_END", "300000"))
         s1 = max(0, min(s1, t))
         s2 = max(s1, min(s2, t))
         return {1: (0, s1), 2: (s1, s2), 3: (s2, t)}
 
     def __init__(self, verbose=1, stage_pub=None):
         super().__init__(verbose)
-        self.current_stage = 0
+        self.current_stage = 1
         self.stage_ranges = CurriculumScheduler.default_stage_ranges()
         self._stage_pub = stage_pub
         self._actors_spawned = False
@@ -235,10 +235,20 @@ _ROUTE_RW_INFO_KEYS = (
     "rw_astar_return",
     "rw_path_drift",
     "rw_threat",
+    "rw_wall_proximity",
     "rw_time",
     "rw_dormant_action_penalty", # new: penalty for non-zero policy output in dormant state
     "rw_threat_away",      # new: bonus for increasing distance from nearest threat
     "rw_lateral_escape",   # new: bonus for perpendicular movement vs threat axis
+)
+_ROUTE_ACTIVE_INFO_KEYS = (
+    "active_step_count",
+    "active_progress_sum",
+    "active_goal_dist_start",
+    "active_goal_dist_end",
+    "active_goal_dist_delta",
+    "active_threat_away_sum",
+    "active_lateral_escape_sum",
 )
 
 class _RouteEpisodeMetricsMixin:
@@ -256,6 +266,15 @@ class _RouteEpisodeMetricsMixin:
         self.ep_raw_action_norms = deque(maxlen=window)
         self.ep_effective_action_norms = deque(maxlen=window)
         self.ep_rw_means = {k: deque(maxlen=window) for k in _ROUTE_RW_INFO_KEYS}
+        self.ep_active_means = {k: deque(maxlen=window) for k in _ROUTE_ACTIVE_INFO_KEYS}
+
+        self.ep_control_rl_rates = deque(maxlen=window)
+        self.ep_control_astar_rates = deque(maxlen=window)
+
+        self._step_control_rl = []
+        self._step_control_astar = []
+
+        self._last_active_info = {k: 0.0 for k in _ROUTE_ACTIVE_INFO_KEYS}
         self._step_path_errors = []
         self._step_threat_maxes = []
         self._step_threat_gates = []
@@ -277,6 +296,13 @@ class _RouteEpisodeMetricsMixin:
             self._step_rl_active_rates.append(1.0 if info.get("rl_mode") == "ACTIVE" else 0.0)
             self._step_raw_action_norms.append(info.get("raw_action_norm", 0.0))
             self._step_effective_action_norms.append(info.get("effective_action_norm", 0.0))
+            control_source = info.get("control_source", "")
+            self._step_control_rl.append(1.0 if control_source == "RL" else 0.0)
+            self._step_control_astar.append(1.0 if control_source == "ASTAR" else 0.0)
+
+            for k in _ROUTE_ACTIVE_INFO_KEYS:
+                if k in info:
+                    self._last_active_info[k] = float(info.get(k, 0.0))
             for k in _ROUTE_RW_INFO_KEYS:
                 self._step_rw[k].append(float(info.get(k, 0.0)))
             if done_i:
@@ -301,7 +327,13 @@ class _RouteEpisodeMetricsMixin:
                     self.ep_raw_action_norms.append(np.mean(self._step_raw_action_norms))
                 if self._step_effective_action_norms:
                     self.ep_effective_action_norms.append(np.mean(self._step_effective_action_norms))
+                if self._step_control_rl:
+                    self.ep_control_rl_rates.append(np.mean(self._step_control_rl))
+                if self._step_control_astar:
+                    self.ep_control_astar_rates.append(np.mean(self._step_control_astar))
 
+                for k in _ROUTE_ACTIVE_INFO_KEYS:
+                    self.ep_active_means[k].append(float(self._last_active_info.get(k, 0.0)))
                 for k in _ROUTE_RW_INFO_KEYS:
                     buf = self._step_rw[k]
                     if buf:
@@ -315,6 +347,9 @@ class _RouteEpisodeMetricsMixin:
                 self._step_rl_active_rates.clear()
                 self._step_raw_action_norms.clear()
                 self._step_effective_action_norms.clear()
+                self._step_control_rl.clear()
+                self._step_control_astar.clear()
+                self._last_active_info = {k: 0.0 for k in _ROUTE_ACTIVE_INFO_KEYS}
 
 
 class RouteTrainingMonitor(_RouteEpisodeMetricsMixin, BaseCallback):
@@ -393,7 +428,15 @@ class RouteTrainingMonitor(_RouteEpisodeMetricsMixin, BaseCallback):
             self.logger.record("action/raw_action_norm", np.mean(self.ep_raw_action_norms))
         if len(self.ep_effective_action_norms) > 0:
             self.logger.record("action/effective_action_norm", np.mean(self.ep_effective_action_norms))
-            
+        if len(self.ep_control_rl_rates) > 0:
+            self.logger.record("control/rl_rate", np.mean(self.ep_control_rl_rates))
+        if len(self.ep_control_astar_rates) > 0:
+            self.logger.record("control/astar_rate", np.mean(self.ep_control_astar_rates))
+
+        for k in _ROUTE_ACTIVE_INFO_KEYS:
+            dq = self.ep_active_means[k]
+            if len(dq) > 0:
+                self.logger.record(f"active/{k}", float(np.mean(dq)))
         for k in _ROUTE_RW_INFO_KEYS:
             dq = self.ep_rw_means[k]
             if len(dq) > 0:
@@ -569,6 +612,13 @@ class TrainingLogWriter(BaseCallback):
             "entropy": vals.get("train/entropy_loss") or vals.get("train/entropy") or vals.get("train/ent_coef"),
             "value_loss": vals.get("train/value_loss") or vals.get("train/critic_loss"),
             "approx_kl": vals.get("train/approx_kl", None),
+            "rl_active_rate": vals.get("route/rl_active_rate"),
+            "control_rl_rate": vals.get("control/rl_rate"),
+            "control_astar_rate": vals.get("control/astar_rate"),
+            "active_goal_dist_delta": vals.get("active/active_goal_dist_delta"),
+            "active_progress_sum": vals.get("active/active_progress_sum"),
+            "active_threat_away_sum": vals.get("active/active_threat_away_sum"),
+            "active_lateral_escape_sum": vals.get("active/active_lateral_escape_sum"),
         }
         self.entries.append(entry)
 
@@ -635,7 +685,12 @@ class PlotSaverCallback(_RouteEpisodeMetricsMixin, BaseCallback):
             "rl_active_rate": float(np.mean(self.ep_rl_active_rates)) if self.ep_rl_active_rates else 0.0,
             "raw_action_norm": float(np.mean(self.ep_raw_action_norms)) if self.ep_raw_action_norms else 0.0,
             "effective_action_norm": float(np.mean(self.ep_effective_action_norms)) if self.ep_effective_action_norms else 0.0,
+            "control_rl_rate": float(np.mean(self.ep_control_rl_rates)) if self.ep_control_rl_rates else 0.0,
+            "control_astar_rate": float(np.mean(self.ep_control_astar_rates)) if self.ep_control_astar_rates else 0.0,
         }
+        for k in _ROUTE_ACTIVE_INFO_KEYS:
+            dq = self.ep_active_means[k]
+            entry[f"mean_{k}"] = float(np.mean(dq)) if dq else 0.0
         for k in _ROUTE_RW_INFO_KEYS:
             dq = self.ep_rw_means[k]
             entry[f"mean_{k}"] = float(np.mean(dq)) if dq else 0.0
@@ -696,7 +751,7 @@ class PlotSaverCallback(_RouteEpisodeMetricsMixin, BaseCallback):
         plt.tight_layout()
         path = os.path.join(self.save_dir, f"training_plots_{self.num_timesteps}.png")
         plt.savefig(path, dpi=150, bbox_inches="tight")
-        plt.close()
+        plt.close(fig)
         if self.verbose:
             print(f"Grafikler kaydedildi: {path}")
         fig_rw, axes_rw = plt.subplots(3, 3, figsize=(12, 10))
@@ -718,13 +773,54 @@ class PlotSaverCallback(_RouteEpisodeMetricsMixin, BaseCallback):
         if self.verbose:
             print(f"Ödül bileşen grafikleri: {path_rw}")
 
+        fig_active, axes_active = plt.subplots(2, 2, figsize=(12, 8))
+        fig_active.suptitle(
+            f"Active-control diagnostics — {self.num_timesteps:,} steps",
+            fontsize=11,
+        )
+
+        ax = axes_active[0, 0]
+        ax.plot(ts, [h.get("control_rl_rate", 0.0) for h in self.history], label="RL control rate")
+        ax.plot(ts, [h.get("control_astar_rate", 0.0) for h in self.history], label="A* control rate")
+        ax.set_title("Control Source Rates")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        ax = axes_active[0, 1]
+        ax.plot(ts, [h.get("mean_active_step_count", 0.0) for h in self.history])
+        ax.set_title("Active Step Count")
+        ax.grid(True, alpha=0.3)
+
+        ax = axes_active[1, 0]
+        ax.plot(ts, [h.get("mean_active_goal_dist_delta", 0.0) for h in self.history], label="Goal Dist Delta")
+        ax.plot(ts, [h.get("mean_active_progress_sum", 0.0) for h in self.history], label="Progress Sum")
+        ax.set_title("Active Progress")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        ax = axes_active[1, 1]
+        ax.plot(ts, [h.get("mean_active_threat_away_sum", 0.0) for h in self.history], label="Threat Away")
+        ax.plot(ts, [h.get("mean_active_lateral_escape_sum", 0.0) for h in self.history], label="Lateral Escape")
+        ax.set_title("Active Avoidance Rewards")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        path_active = os.path.join(
+            self.save_dir, f"training_active_diag_{self.num_timesteps}.png"
+        )
+        plt.savefig(path_active, dpi=150, bbox_inches="tight")
+        plt.close(fig_active)
+        if self.verbose:
+            print(f"Active diagnostic grafikleri: {path_active}")
+
     def _on_training_end(self):
         if HAS_MATPLOTLIB and self.history:
             self._save_plots()
             if self.verbose:
                 print(f"Final grafikler: {self.save_dir}")
 
-TOTAL_TIMESTEPS = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "204800"))
+TOTAL_TIMESTEPS = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "550000"))
 
 
 def main(args=None):

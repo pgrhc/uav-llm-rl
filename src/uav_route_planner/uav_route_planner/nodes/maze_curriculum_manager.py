@@ -16,7 +16,7 @@ WALL_THICKNESS           = 0.2
 CELL_SIZE                = 5.0
 Z_CENTER                 = WALL_HEIGHT / 2.0
 
-ROWS, COLS               = 20, 20
+ROWS, COLS               = 15, 15
 random.seed(time.time_ns())
 
 ACTOR_DENSITY            = 0.5
@@ -24,12 +24,11 @@ DRONE_SPAWN_CELL         = (ROWS // 2, COLS // 2)
 AVOID_SPAWN_RADIUS_CELLS = 1.0
 
 MIN_ACTORS               = 40
-MAX_ACTORS               = 350
+MAX_ACTORS               = 200
 
 LONG_CORRIDOR_BONUS_THRESHOLD = 4
 MIN_SPAWN_DIST           = 3.0
-SPAWN_DELAY_SEC          = 0.05
-
+SPAWN_DELAY_SEC          = 0.2
 WALLS_SAVE_PATH          = "/home/ubuntu/Desktop/maze_walls.json"
 
 TOPIC_SET_STAGE   = "/route/set_stage"    
@@ -46,7 +45,7 @@ STATIC_ACTORS = [
 
 DYNAMIC_ACTORS = [
     {"type": "dynamic", "sdf_path": "/home/ubuntu/Desktop/gazebo_custom_models/actor_run/model.sdf",       "speed_range": (1.0, 4.0)},
-    {"type": "dynamic", "sdf_path": "/home/ubuntu/Desktop/gazebo_custom_models/walking_person/model.sdf", "speed_range": (1.0, 2.0)},
+    
 ]
 
 DIRS = {"N": (-1, 0), "E": (0, 1), "S": (1, 0), "W": (0, -1)}
@@ -367,19 +366,19 @@ class CurriculumManager:
         print(f"{'='*55}")
 
         if stage == 1:
-           
-            self._spawn_systematic(STATIC_ACTORS, label="static", spacing_cells=1)
+            # Stage 1: static humans every cell
+            self._spawn_systematic(STATIC_ACTORS, label="static", spacing_cells=1, max_spawn=200)
 
         elif stage == 2:
             self._remove_all()
             # Stage 2: dynamic humans only — moving threats
-            self._spawn_systematic(DYNAMIC_ACTORS, label="dynamic", spacing_cells=1)
+            self._spawn_systematic(DYNAMIC_ACTORS, label="dynamic", spacing_cells=1, max_spawn=100)
 
         elif stage == 3:
-            
+
             # Stage 3: mix of static + dynamic threats
             self._spawn_systematic(
-                STATIC_ACTORS, label="mixed", spacing_cells=1
+                STATIC_ACTORS, label="mixed", spacing_cells=1, max_spawn=50
             )
 
         else:
@@ -401,13 +400,8 @@ class CurriculumManager:
             time.sleep(0.01)
         print("Tum aktorler silindi.")
 
-    def _spawn_systematic(self, catalog: list, label: str, spacing_cells: int = 2):
-        """Place actors every `spacing_cells` cells along every corridor.
-
-        This guarantees the agent ALWAYS encounters obstacles — unlike
-        random placement which may cluster or leave large clear gaps.
-        spacing_cells=2 means one actor every 10 m (2 × CELL_SIZE=5 m).
-        """
+    def _spawn_systematic(self, catalog: list, label: str, spacing_cells: int = 2, max_spawn: int | None = None):
+        """Place actors every `spacing_cells` cells along every corridor."""
         if self._walls is None:
             print("Walls ayarlanmamis!")
             return
@@ -416,10 +410,12 @@ class CurriculumManager:
         used_pos: list[tuple[float, float]] = []
         spawned_n = 0
         actor_idx = 0
-        print(f"Hedef '{label}' (systematic, spacing={spacing_cells} cells):")
+        spawn_limit = MAX_ACTORS if max_spawn is None else max_spawn
+
+        print(f"Hedef '{label}' (systematic, spacing={spacing_cells} cells, max_spawn={spawn_limit}):")
 
         cors = collect_corridors(self._walls, ROWS, COLS, min_len=2)
-        random.shuffle(cors)  # randomise corridor order so layout varies each run
+        random.shuffle(cors)
 
         for cor in cors:
             if near_spawn(cor, sr, sc, AVOID_SPAWN_RADIUS_CELLS):
@@ -427,47 +423,54 @@ class CurriculumManager:
             (r1, c1), (r2, c2), is_h = cor
 
             if is_h:
-                # Horizontal corridor: walk columns at stride `spacing_cells`
                 cells = list(range(min(c1, c2), max(c1, c2) + 1, spacing_cells))
                 actor_positions = [
-                    (cell_center_world(r1, cc), cell_center_world(r1, cc + 1 if cc + 1 <= max(c1, c2) else cc))
+                    (
+                        cell_center_world(r1, cc),
+                        cell_center_world(r1, cc + 1 if cc + 1 <= max(c1, c2) else cc)
+                    )
                     for cc in cells
                 ]
             else:
-                # Vertical corridor: walk rows at stride `spacing_cells`
                 cells = list(range(min(r1, r2), max(r1, r2) + 1, spacing_cells))
                 actor_positions = [
-                    (cell_center_world(rr, c1), cell_center_world(rr + 1 if rr + 1 <= max(r1, r2) else rr, c1))
+                    (
+                        cell_center_world(rr, c1),
+                        cell_center_world(rr + 1 if rr + 1 <= max(r1, r2) else rr, c1)
+                    )
                     for rr in cells
                 ]
 
             for (x1, y1), (x2, y2) in actor_positions:
+                if spawned_n >= spawn_limit:
+                    break
+
                 if not far_enough(x1, y1, used_pos, MIN_SPAWN_DIST):
                     continue
 
-                p    = random.choice(catalog).copy()
-                sfx  = "s" if p["type"] == "static" else "d"
+                p = random.choice(catalog).copy()
+                sfx = "s" if p["type"] == "static" else "d"
                 name = f"human_{sfx}_{actor_idx}_{random.randint(100, 999)}"
                 actor_idx += 1
 
                 sdf = build_actor_sdf(name, p, x1, y1, x2, y2, is_h)
                 if not sdf:
                     continue
+
                 ok = spawn_sdf_model(name, sdf)
                 if ok:
                     used_pos.append((x1, y1))
                     with self._lock:
                         self._spawned[name] = (x1, y1, 0.0, p["type"])
                     spawned_n += 1
+
                 time.sleep(SPAWN_DELAY_SEC)
-                if spawned_n >= MAX_ACTORS:
-                    break
-            
-            if spawned_n >= MAX_ACTORS:
+
+            if spawned_n >= spawn_limit:
                 break
 
         print(f"'{label}' {spawned_n} aktor spawn edildi (systematic).")
-
+   
     def _spawn(self, catalog: List[dict], label: str):
         if self._walls is None:
             print("Walls ayarlanmamis!")
@@ -547,7 +550,7 @@ class MazeCurriculumNode(Node):
         self._pose_pub  = self.create_publisher(PoseArray, TOPIC_ACTOR_POSES, 10)
         self._stage_pub = self.create_publisher(Int32,     TOPIC_STAGE_OUT,   10)
 
-        self.create_timer(0.1, self._publish_cb)
+        self.create_timer(0.5, self._publish_cb)
         self._transition_thread: Optional[threading.Thread] = None
 
         self.get_logger().info(
@@ -605,6 +608,14 @@ def main(args=None):
     mgr.set_walls(walls)
 
     node = MazeCurriculumNode(mgr)
+
+    # Eğitim başlamadan bizzat Stage 1'i başlat
+    print("\n[INIT] Otomatik olarak Stage 1 baslatiliyor...")
+    node._transition_thread = threading.Thread(
+        target=mgr.transition_to, args=(1,), daemon=True
+    )
+    node._transition_thread.start()
+
     print(
         "\nROS2 node calisiyor. Train basladiginda stage komutlarini bekliyor...\n"
         f"  SUB  {TOPIC_SET_STAGE}   <- CurriculumScheduler publish eder\n"

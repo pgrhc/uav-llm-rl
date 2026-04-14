@@ -24,7 +24,7 @@ import threading
 from collections import deque
 
 # Curriculum maze sabitleri (maze_curriculum_manager ile uyumlu)
-ROWS, COLS = 20, 20
+ROWS, COLS = 15, 15
 CELL_SIZE = 5.0
 DRONE_SPAWN_CELL = (ROWS // 2, COLS // 2)
 WALLS_PATH = "/home/ubuntu/Desktop/maze_walls.json"
