@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """
-PX4 offboard: /plan (A* path) veya taze route waypoint (varsayılan /route/waypoint_desired) ile setpoint üretir.
+PX4 offboard setpoint node for route RL.
 
-Güvenlik filtresi zinciri: policy → /route/waypoint_desired → route_safety_filter → /route/waypoint_safe.
-PX4'i filtreden sonra beslemek için parametre: route_waypoint_topic:=/route/waypoint_safe
+Only /route/waypoint_desired (or safety-filtered equivalent) is used as navigation input.
+If waypoint stream pauses beyond ROUTE_WP_TIMEOUT, node holds current pose safely.
 
-Tek node hem rota RL hem tehdit / diğer senaryolar tarafından kullanılabilir:
-- Tehdit vb.: genelde sadece /plan → publish_trajectory_setpoint içinde smoothing
-  self.SETPOINT_ALPHA / self.MAX_SETPOINT_STEP (ROS: alpha, max_speed) ile yapılır.
-- Route RL: /route/waypoint_desired gelince (ROUTE_WP_TIMEOUT içinde) doğrudan hedefe
-  gidilir; alpha/max_speed bu dala uygulanmaz — davranış route tarafından adım adım belirlenir.
-
-Parametre varsayılanları modül sabitleriyle aynı tutulur (tehdit tarafında sessiz regresyon olmasın).
+DEĞİŞİKLİK: EMERGENCY_STOP bloğu kaldırıldı.
+  - Eskiden: lidar < EMERGENCY_STOP_DIST olduğunda drone tamamen donuyordu ve
+    RL'den gelen kaçış waypoint'leri yok sayılıyordu → eğitim bozuluyordu.
+  - Şimdi: sadece SLOW_DOWN_DIST bandında yumuşak yavaşlama var.
+    Kaçış waypoint'ini env zaten yayınlıyor; bu node onu olduğu gibi uygular.
 """
 import rclpy
 from rclpy.node import Node
@@ -21,26 +19,25 @@ import math
 from px4_msgs.msg import OffboardControlMode
 from px4_msgs.msg import TrajectorySetpoint
 from px4_msgs.msg import VehicleCommand
-from px4_msgs.msg import VehicleStatus  # EKLENEN
+from px4_msgs.msg import VehicleStatus
 
-from nav_msgs.msg import Path
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import Float32MultiArray
 
-# ─── ADAPTİF AYARLAR ─────────────────────────────────────────────────────────
+
 MAX_LOOKAHEAD = 1.5
 MIN_LOOKAHEAD = 0.6
 TURN_THRESHOLD = 0.5
 YAW_DEADBAND = 0.2
-# ─────────────────────────────────────────────────────────────────────────────
 
-# ─── STABİLİTE AYARLARI (EKLENDİ) ────────────────────────────────────────────
 TURN_ON_THRESHOLD  = 0.55
 TURN_OFF_THRESHOLD = 0.35
 
-SETPOINT_ALPHA = 0.25          # was 0.15 — snappier tracking
-MAX_SETPOINT_STEP = 0.60       # was 0.25 — faster drone movement
+SETPOINT_ALPHA = 0.85
+MAX_SETPOINT_STEP = 1.20
 TIMER_PERIOD = 0.05
+MAX_ALLOWED_DIST_FROM_CURRENT = 2.0
 
 NEAR_TARGET_DIST = 0.15
 WAYPOINT_REACHED_DIST = 0.35
@@ -51,8 +48,14 @@ MAX_YAW_RATE = 0.6
 CLOSEST_SEARCH_WINDOW = 50
 PATH_RESET_DIST = 1.0
 
-ROUTE_WP_TIMEOUT = 0.3
+ROUTE_WP_TIMEOUT = 0.8
 
+# EMERGENCY_STOP_DIST kaldırıldı — artık drone lidar nedeniyle donmaz.
+# RL env tarafından kaçış waypoint'i yayınlanır; bu node onu uygular.
+SLOW_DOWN_DIST = 1.2   # Bu mesafenin altında yumuşak yavaşlama hâlâ aktif.
+
+MIN_ALTITUDE = 0.3
+MAX_ALTITUDE = 3.0
 
 
 class OffboardControl(Node):
@@ -72,16 +75,18 @@ class OffboardControl(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=10
         )
-        # Path-follow smoothing: defaults = module constants (threat / legacy ile aynı sayılar)
+
         self.declare_parameter('max_speed', float(MAX_SETPOINT_STEP))
         self.declare_parameter('alpha', float(SETPOINT_ALPHA))
         self.declare_parameter('route_waypoint_topic', '/route/waypoint_desired')
 
         self.MAX_SETPOINT_STEP = float(self.get_parameter('max_speed').value)
         self.SETPOINT_ALPHA = float(self.get_parameter('alpha').value)
+
         route_wp_topic = str(self.get_parameter('route_waypoint_topic').value).strip()
         if route_wp_topic and not route_wp_topic.startswith('/'):
             route_wp_topic = '/' + route_wp_topic
+
         self.offboard_control_mode_pub = self.create_publisher(
             OffboardControlMode, '/fmu/in/offboard_control_mode', qos_px4)
         self.trajectory_setpoint_pub = self.create_publisher(
@@ -91,35 +96,28 @@ class OffboardControl(Node):
 
         self.odom_sub = self.create_subscription(
             Odometry, '/odometry/filtered', self.odom_callback, qos_standard)
-        self.path_sub = self.create_subscription(
-            Path, '/plan', self.path_callback, qos_standard)
         self.route_wp_sub = self.create_subscription(
             PoseStamped, route_wp_topic, self.route_wp_callback, 10)
-        
-        # EKLENEN: Vehicle status subscriber
         self.vehicle_status_sub = self.create_subscription(
             VehicleStatus, '/fmu/out/vehicle_status_v1', self.vehicle_status_callback, qos_px4)
 
+        # Lidar distance from state_vec (yumuşak yavaşlama için)
+        self.min_lidar_dist = 999.0
+        self.lidar_sub = self.create_subscription(
+            Float32MultiArray, '/threat/state_vec', self.threat_cb, 10)
+
         self.offboard_setpoint_counter = 0
-        self.current_path = []
         self.current_pos_enu = [0.0, 0.0, 0.0]
         self.current_yaw = 0.0
         self.mission_altitude = -1.2
         self.last_valid_yaw = 0.0
 
-        self.in_turn_mode = False
-        self.path_index = 0
-
         self.sp_n = None
         self.sp_e = None
-
-        self.last_plan_start = None
-        self.last_plan_end = None
 
         self.route_wp = None
         self.route_wp_stamp = 0.0
 
-        # EKLENEN: Durum takibi için
         self.vehicle_status = None
         self.arming_state = 0
         self.nav_state = 0
@@ -129,14 +127,21 @@ class OffboardControl(Node):
 
         self.timer = self.create_timer(TIMER_PERIOD, self.timer_callback)
         self.get_logger().info(
-            f"ADAPTİF MOD: Max={MAX_LOOKAHEAD}m, Min={MIN_LOOKAHEAD}m | "
-            f"Timer={TIMER_PERIOD}s | Alpha={self.SETPOINT_ALPHA} | "
-            f"MaxStep={self.MAX_SETPOINT_STEP}m (path-follow; route_wp uses direct setpoint) | "
-            f"route_wp={route_wp_topic}"
+            f"ADAPTİF MOD: Timer={TIMER_PERIOD}s | Alpha={self.SETPOINT_ALPHA} | "
+            f"MaxStep={self.MAX_SETPOINT_STEP}m | route_wp={route_wp_topic} | "
+            f"EmergencyStop=KAPALI (kaçış env tarafından yönetilir)"
         )
 
+    def threat_cb(self, msg):
+        data = msg.data
+        if len(data) >= 39:
+            lidar = [data[i] for i in range(3, 39) if data[i] > 1e-3]
+            if lidar:
+                self.min_lidar_dist = min(lidar) * 30.0
+            else:
+                self.min_lidar_dist = 999.0
+
     def vehicle_status_callback(self, msg):
-        """Vehicle durumunu takip et"""
         self.vehicle_status = msg
         self.arming_state = msg.arming_state
         self.nav_state = msg.nav_state
@@ -146,15 +151,12 @@ class OffboardControl(Node):
         new_y = msg.pose.pose.position.y
         new_z = msg.pose.pose.position.z
 
-        # DETECT TELEPORTATION
         if hasattr(self, '_first_odom_received') and self._first_odom_received:
             dist_jump = math.hypot(new_x - self.current_pos_enu[0], new_y - self.current_pos_enu[1])
             if dist_jump > 2.0:
                 self.get_logger().warn(f"🚀 Teleport detected ({dist_jump:.1f}m jump)! Clearing controller state.")
-                self.current_path = []
                 self.sp_n = None
                 self.sp_e = None
-                self.path_index = 0
                 self.route_wp = None
                 self.route_wp_stamp = 0.0
 
@@ -167,73 +169,21 @@ class OffboardControl(Node):
         self.current_yaw = math.atan2(siny_cosp, cosy_cosp)
 
     def route_wp_callback(self, msg: PoseStamped):
-        """Route agent'ın ürettiği tek waypoint'i al."""
         self.route_wp = msg.pose
         self.route_wp_frame_id = msg.header.frame_id
         self.route_wp_stamp = self.get_clock().now().nanoseconds * 1e-9
 
-    def path_callback(self, msg):
-        poses = msg.poses
-        if not poses:
-            self.current_path = []
-            self.path_index = 0
-            self.last_plan_start = None
-            self.last_plan_end = None
-            return
-
-        start = poses[0].pose.position
-        end = poses[-1].pose.position
-
-        if self.last_plan_start is None or self.last_plan_end is None:
-            self.current_path = poses
-            self.path_index = 0
-            self.last_plan_start = start
-            self.last_plan_end = end
-            return
-
-        self.current_path = poses
-        self.last_plan_start = start
-        self.last_plan_end = end
-        
-        # Her yeni planda, mevcut pozisyonumuza en yakın indexi bularak path_index'i güncelliyoruz
-        # Böylece listeyi kopyaladığımızda hedef aniden zıplamaz
-        if hasattr(self, 'current_pos_enu'):
-            cx, cy = self.current_pos_enu[0], self.current_pos_enu[1]
-            best_d = float('inf')
-            best_i = 0
-            for i in range(min(50, len(poses))):  # Yeni plan drone'dan başlar, o yüzden ilk 50 noktaya bakalım
-                px = poses[i].pose.position.x
-                py = poses[i].pose.position.y
-                d = (px - cx)**2 + (py - cy)**2
-                if d < best_d:
-                    best_d = d
-                    best_i = i
-            self.path_index = best_i
-        else:
-            self.path_index = 0
-
     def timer_callback(self):
-        """
-        GELİŞTİRİLMİŞ: Sıralı ve kontrollü başlatma
-        1. Önce yeterli setpoint gönder (en az 2 saniye = 40 döngü @ 50ms)
-        2. Sonra offboard mode'a geç
-        3. Mode geçişini kontrol et
-        4. Son olarak arm et
-        """
-        # Her durumda setpoint ve control mode gönder
         self.publish_offboard_control_mode()
         self.publish_trajectory_setpoint()
 
-        # Başlatma sekansı
         if not self.initialization_complete:
-            # Adım 1: En az 50 setpoint gönder (2.5 saniye @ 50ms)
             if self.offboard_setpoint_counter < 50:
                 self.offboard_setpoint_counter += 1
                 if self.offboard_setpoint_counter == 49:
                     self.get_logger().info("✓ Yeterli setpoint gönderildi, offboard mode'a geçiliyor...")
                 return
 
-            # Adım 2: Offboard mode'a geç (bir kere dene)
             if not self.offboard_mode_attempted:
                 self.get_logger().info("→ Offboard mode komutu gönderiliyor...")
                 self.publish_vehicle_command(
@@ -243,14 +193,11 @@ class OffboardControl(Node):
                 self.offboard_setpoint_counter += 1
                 return
 
-            # Adım 3: Offboard mode'un aktif olmasını bekle (en az 1 saniye = 20 döngü)
-            if self.offboard_setpoint_counter < 70:  # 50 + 20
+            if self.offboard_setpoint_counter < 70:
                 self.offboard_setpoint_counter += 1
-                
-                # Nav state kontrolü: 14 = Offboard mode
                 if self.vehicle_status and self.nav_state == 14:
                     self.get_logger().info("✓ Offboard mode aktif!")
-                    self.offboard_setpoint_counter = 70  # Hızlıca arm adımına geç
+                    self.offboard_setpoint_counter = 70
                 elif self.offboard_setpoint_counter == 69:
                     if self.vehicle_status and self.nav_state != 14:
                         self.get_logger().warn(
@@ -259,7 +206,6 @@ class OffboardControl(Node):
                         )
                 return
 
-            # Adım 4: Arm et (bir kere dene)
             if not self.arm_attempted:
                 self.get_logger().info("→ Arm komutu gönderiliyor...")
                 self.arm()
@@ -267,11 +213,8 @@ class OffboardControl(Node):
                 self.offboard_setpoint_counter += 1
                 return
 
-            # Adım 5: Arm durumunu kontrol et (1 saniye bekle)
-            if self.offboard_setpoint_counter < 90:  # 70 + 20
+            if self.offboard_setpoint_counter < 90:
                 self.offboard_setpoint_counter += 1
-                
-                # Arming state: 2 = Armed
                 if self.vehicle_status and self.arming_state == 2:
                     self.get_logger().info("✓✓✓ Drone armed ve hazır! ✓✓✓")
                     self.initialization_complete = True
@@ -283,121 +226,10 @@ class OffboardControl(Node):
                         )
                     else:
                         self.get_logger().warn("⚠ Vehicle status alınamıyor, arm durumu belirsiz.")
-                    self.initialization_complete = True  # Yine de devam et
+                    self.initialization_complete = True
                 return
 
-        # Normal operasyon
         self.offboard_setpoint_counter += 1
-
-    def _find_closest_index_nearby(self):
-        if not self.current_path:
-            return 0
-
-        curr_x = self.current_pos_enu[0]
-        curr_y = self.current_pos_enu[1]
-
-        n = len(self.current_path)
-        i0 = max(0, self.path_index - CLOSEST_SEARCH_WINDOW)
-        i1 = min(n - 1, self.path_index + CLOSEST_SEARCH_WINDOW)
-
-        best_i = self.path_index
-        best_d2 = float('inf')
-
-        for i in range(i0, i1 + 1):
-            p = self.current_path[i].pose.position
-            dx = p.x - curr_x
-            dy = p.y - curr_y
-            d2 = dx * dx + dy * dy
-            if d2 < best_d2:
-                best_d2 = d2
-                best_i = i
-
-        return best_i
-
-    def _advance_path_index_if_reached(self):
-        if not self.current_path:
-            return
-            
-        curr_x = self.current_pos_enu[0]
-        curr_y = self.current_pos_enu[1]
-
-        # Sadece bulunduğumuz noktadan biraz ileriye kadar tarayalım
-        best_dist = float('inf')
-        best_i = self.path_index
-        
-        search_end = min(len(self.current_path), self.path_index + 30)
-        
-        for i in range(self.path_index, search_end):
-            wp = self.current_path[i].pose.position
-            dist = math.sqrt((wp.x - curr_x) ** 2 + (wp.y - curr_y) ** 2)
-            if dist <= best_dist:
-                best_dist = dist
-                best_i = i
-            elif dist > best_dist + 1.0:
-                break
-                
-        self.path_index = best_i
-
-    def _get_lookahead_along_path(self, lookahead_dist):
-        if not self.current_path:
-            return None
-
-        n = len(self.current_path)
-        if n == 1:
-            return self.current_path[0].pose.position
-
-        i = max(0, min(self.path_index, n - 1))
-
-        acc = 0.0
-        prev = self.current_path[i].pose.position
-
-        for j in range(i + 1, n):
-            cur = self.current_path[j].pose.position
-            seg = math.sqrt((cur.x - prev.x) ** 2 + (cur.y - prev.y) ** 2)
-            acc += seg
-            if acc >= lookahead_dist:
-                return cur
-            prev = cur
-
-        return self.current_path[-1].pose.position
-
-    def get_adaptive_lookahead_point(self):
-        if not self.current_path:
-            return None, 0.0
-
-        self._advance_path_index_if_reached()
-
-        curr_x = self.current_pos_enu[0]
-        curr_y = self.current_pos_enu[1]
-
-        target_far = self._get_lookahead_along_path(MAX_LOOKAHEAD)
-        if target_far is None:
-            return None, 0.0
-
-        dx = target_far.x - curr_x
-        dy = target_far.y - curr_y
-        desired_yaw = math.atan2(dy, dx)
-
-        yaw_error = abs(
-            math.atan2(
-                math.sin(desired_yaw - self.current_yaw),
-                math.cos(desired_yaw - self.current_yaw)
-            )
-        )
-
-        if self.in_turn_mode:
-            if yaw_error < TURN_OFF_THRESHOLD:
-                self.in_turn_mode = False
-        else:
-            if yaw_error > TURN_ON_THRESHOLD:
-                self.in_turn_mode = True
-
-        if self.in_turn_mode:
-            target_close = self._get_lookahead_along_path(MIN_LOOKAHEAD)
-            final_target = target_close if target_close else target_far
-            return final_target, yaw_error
-        else:
-            return target_far, yaw_error
 
     def _has_active_route_wp(self) -> bool:
         if self.route_wp is None:
@@ -408,120 +240,114 @@ class OffboardControl(Node):
     def publish_trajectory_setpoint(self):
         msg = TrajectorySetpoint()
 
-        target_enu, yaw_error = self.get_adaptive_lookahead_point()
-
         target_north = None
         target_east = None
         target_down = self.mission_altitude
-        forced_yaw_ned = None
+        rl_yaw_bias_ned = 0.0
+
+        # Mevcut pozisyon (Odom'dan gelen ENU verisini NED olarak kullanıyoruz)
+        curr_north = self.current_pos_enu[1]
+        curr_east = self.current_pos_enu[0]
+        curr_down = -self.current_pos_enu[2]
 
         if self._has_active_route_wp():
             t_enu = self.route_wp.position
             q = self.route_wp.orientation
+
+            # ENU -> NED dönüşümü
+            target_north = t_enu.y
+            target_east = t_enu.x
+            target_down = -t_enu.z if t_enu.z > 0.0 else self.mission_altitude
+
+            # Altitude clamp (Güvenlik için)
+            target_down = max(-MAX_ALTITUDE, min(-MIN_ALTITUDE, target_down))
+
+            # --- Yaw Hesaplama (ENU to NED) ---
+            # 1. Waypoint'in kendi içindeki yönelimi (Quat to Euler ENU)
             wp_yaw_enu = math.atan2(
                 2.0 * (q.w * q.z + q.x * q.y),
                 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
             )
-
-            is_residual = getattr(self, "route_wp_frame_id", "") == "residual"
-
-            if is_residual and target_enu is not None:
-                # t_enu is ALREADY the absolute position calculated by route_curriculum_env
-                # It contains (A* lookahead + RL residual bias). So we MUST use it directly.
-                target_east = t_enu.x
-                target_north = t_enu.y
-                # Don't touch target_down; let it fallback to mission_altitude 
-            else:
-                target_north = t_enu.y
-                target_east = t_enu.x
-                target_down = -t_enu.z if t_enu.z > 0.0 else self.mission_altitude
+            # 2. ENU Yaw -> NED Yaw dönüşümü
+            wp_yaw_ned = -wp_yaw_enu + math.pi / 2.0
             
-            # Convert ENU yaw to NED yaw (NED = pi/2 - ENU)
-            forced_yaw_ned = math.atan2(math.sin(math.pi/2.0 - wp_yaw_enu), math.cos(math.pi/2.0 - wp_yaw_enu))
-            yaw_error = 0.0  # Disable local pure-pursuit turn constraints for RL target
+            # 3. Mevcut Yaw'ı da NED referansına çekelim (Odom callback'te ENU geliyordu)
+            curr_yaw_ned = -self.current_yaw + math.pi / 2.0
 
-        elif target_enu is not None:
-            target_north = target_enu.y
-            target_east = target_enu.x
-            target_down = self.mission_altitude
+            # 4. RL'den gelen bias (hata payını normalize et)
+            yaw_bias_err = math.atan2(
+                math.sin(wp_yaw_ned - curr_yaw_ned),
+                math.cos(wp_yaw_ned - curr_yaw_ned)
+            )
+            rl_yaw_bias_ned = max(min(0.35 * yaw_bias_err, 0.25), -0.25)
 
         if target_north is not None and target_east is not None:
-            curr_north = self.current_pos_enu[1]
-            curr_east = self.current_pos_enu[0]
+            # Mesafe kısıtlama (Çok uzaksa kırp)
+            dist_to_wp_raw = math.hypot(target_north - curr_north, target_east - curr_east)
+            
+            if dist_to_wp_raw > MAX_ALLOWED_DIST_FROM_CURRENT:
+                ratio = MAX_ALLOWED_DIST_FROM_CURRENT / dist_to_wp_raw
+                target_north = curr_north + (target_north - curr_north) * ratio
+                target_east = curr_east + (target_east - curr_east) * ratio
 
-            delta_north = target_north - curr_north
-            delta_east = target_east - curr_east
-            dist_to_target = math.sqrt(delta_north ** 2 + delta_east ** 2)
-
-            raw_n = target_north
-            raw_e = target_east
-
+            # Yumuşatma (Alpha Filter)
             if self.sp_n is None:
-                self.sp_n, self.sp_e = raw_n, raw_e
+                self.sp_n, self.sp_e = target_north, target_east
             else:
                 alpha = self.SETPOINT_ALPHA
                 max_step = self.MAX_SETPOINT_STEP
-                self.sp_n = (1.0 - alpha) * self.sp_n + alpha * raw_n
-                self.sp_e = (1.0 - alpha) * self.sp_e + alpha * raw_e
 
+                self.sp_n = (1.0 - alpha) * self.sp_n + alpha * target_north
+                self.sp_e = (1.0 - alpha) * self.sp_e + alpha * target_east
+
+                # Adım boyu kısıtlama
                 dn = self.sp_n - curr_north
                 de = self.sp_e - curr_east
-                d = math.sqrt(dn * dn + de * de)
+                d = math.hypot(dn, de)
                 if d > max_step and d > 1e-6:
                     scale = max_step / d
                     self.sp_n = curr_north + dn * scale
                     self.sp_e = curr_east + de * scale
 
-            msg.position = [self.sp_n, self.sp_e, target_down]
-            msg.velocity = [float('nan'), float('nan'), float('nan')]
+            # --- Lidar Soft Slowdown ---
+            if self.min_lidar_dist < SLOW_DOWN_DIST:
+                slow_factor = max(0.15, self.min_lidar_dist / SLOW_DOWN_DIST)
+                self.sp_n = curr_north + (self.sp_n - curr_north) * slow_factor
+                self.sp_e = curr_east + (self.sp_e - curr_east) * slow_factor
 
-            if forced_yaw_ned is not None:
-                desired_yaw_ned = forced_yaw_ned
+            msg.position = [float(self.sp_n), float(self.sp_e), float(target_down)]
+            
+            # --- Final Yaw Kontrolü ---
+            # Hedef yönüne bakma (Look-ahead yaw)
+            delta_n = target_north - curr_north
+            delta_e = target_east - curr_east
+            dist_to_target = math.hypot(delta_n, delta_e)
+
+            if dist_to_target > NEAR_TARGET_DIST:
+                base_yaw_ned = math.atan2(delta_e, delta_n)
             else:
-                # Disable direction locking if strictly hitting the close RL target, to prevent erratic spins
-                if dist_to_target > NEAR_TARGET_DIST:
-                    desired_yaw_ned = math.atan2(delta_east, delta_north)
-                else:
-                    desired_yaw_ned = self.last_valid_yaw
+                base_yaw_ned = self.last_valid_yaw
 
-            yaw_err = math.atan2(
-                math.sin(desired_yaw_ned - self.last_valid_yaw),
-                math.cos(desired_yaw_ned - self.last_valid_yaw)
-            )
+            desired_yaw_ned = base_yaw_ned + rl_yaw_bias_ned
+            
+            # Normalize yaw
+            desired_yaw_ned = math.atan2(math.sin(desired_yaw_ned), math.cos(desired_yaw_ned))
 
-            if abs(yaw_err) < YAW_ERR_DEADBAND and (yaw_error <= TURN_THRESHOLD):
-                msg.yaw = self.last_valid_yaw
-                if hasattr(msg, "yaw_speed"):
-                    msg.yaw_speed = 0.0
-            else:
-                msg.yaw = desired_yaw_ned
-                self.last_valid_yaw = desired_yaw_ned
-
-                if hasattr(msg, "yaw_speed"):
-                    req_rate = yaw_err / max(TIMER_PERIOD, 1e-3)
-                    if req_rate > MAX_YAW_RATE:
-                        req_rate = MAX_YAW_RATE
-                    if req_rate < -MAX_YAW_RATE:
-                        req_rate = -MAX_YAW_RATE
-                    msg.yaw_speed = req_rate
-
-            if self.offboard_setpoint_counter % 20 == 0 and self.initialization_complete:
-                mode_str = "SHORT (Viraj)" if self.in_turn_mode else "LONG (Düz)"
-                self.get_logger().info(
-                    f"Mode: {mode_str} | Dist: {dist_to_target:.2f}m | "
-                    f"YawErrFar: {math.degrees(yaw_error):.1f}° | idx={self.path_index}"
-                )
+            # Yaw hız kısıtlama
+            yaw_err = math.atan2(math.sin(desired_yaw_ned - self.last_valid_yaw),
+                                 math.cos(desired_yaw_ned - self.last_valid_yaw))
+            
+            yaw_step = max(min(0.5 * yaw_err, 0.15), -0.15)
+            msg.yaw = self.last_valid_yaw + yaw_step
+            self.last_valid_yaw = msg.yaw
 
         else:
-            msg.position = [self.current_pos_enu[1], self.current_pos_enu[0], self.mission_altitude]
-            msg.velocity = [float('nan'), float('nan'), float('nan')]
-            msg.yaw = float('nan')
-            if hasattr(msg, "yaw_speed"):
-                msg.yaw_speed = float('nan')
+            # Waypoint yoksa olduğu yerde dur
+            msg.position = [curr_north, curr_east, float(self.mission_altitude)]
+            msg.yaw = self.last_valid_yaw
 
         msg.timestamp = self.get_clock().now().nanoseconds // 1000
         self.trajectory_setpoint_pub.publish(msg)
-
     def publish_offboard_control_mode(self):
         msg = OffboardControlMode()
         msg.position = True

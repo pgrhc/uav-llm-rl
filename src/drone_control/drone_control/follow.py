@@ -24,8 +24,8 @@ YAW_DEADBAND = 0.2
 TURN_ON_THRESHOLD  = 0.55
 TURN_OFF_THRESHOLD = 0.35
 
-SETPOINT_ALPHA = 0.15
-MAX_SETPOINT_STEP = 0.25
+SETPOINT_ALPHA = 0.45
+MAX_SETPOINT_STEP = 0.75
 TIMER_PERIOD = 0.05
 
 NEAR_TARGET_DIST = 0.15
@@ -73,7 +73,7 @@ class OffboardControl(Node):
         
         # EKLENEN: Vehicle status subscriber
         self.vehicle_status_sub = self.create_subscription(
-            VehicleStatus, '/fmu/out/vehicle_status', self.vehicle_status_callback, qos_px4)
+            VehicleStatus, '/fmu/out/vehicle_status_v1', self.vehicle_status_callback, qos_px4)
 
         self.offboard_setpoint_counter = 0
         self.current_path = []

@@ -14,7 +14,7 @@ import numpy as np
 
 try:
     import matplotlib
-    matplotlib.use("Agg")  
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     HAS_MATPLOTLIB = True
 except ImportError:
@@ -23,23 +23,25 @@ import gymnasium as gym
 import rclpy
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, CallbackList
 from stable_baselines3.common.monitor import Monitor
 import glob
 
-import uav_route_planner.envs  
+import uav_route_planner.envs
 UNIFIED_MAZE = False
+
+
 def spawn_stage3_actors_lazy():
     try:
         from uav_route_planner.maze_curriculum_world import spawn_stage3_actors_lazy as _fn
         return _fn()
     except ModuleNotFoundError:
         print(
-            "WARNING: maze_curriculum_world yok. Stage 3 aktorleri spawn edilmedi. "
-            "Aktorler icin: ros2 run uav_route_planner maze_curriculum_world --actors"
+            "WARNING: maze_curriculum_world yok. Stage 3 aktorleri spawn edilmedi."
         )
         return []
+
 
 from std_msgs.msg import Int32
 
@@ -56,7 +58,7 @@ class TimestepSyncWrapper(gym.Wrapper):
 
 
 class SyncSB3TimestepCallback(BaseCallback):
-   def _on_step(self) -> bool:
+    def _on_step(self) -> bool:
         try:
             self.training_env.env_method("set_sb3_timesteps", int(self.num_timesteps))
         except Exception:
@@ -64,27 +66,11 @@ class SyncSB3TimestepCallback(BaseCallback):
         return True
 
 
-def _route_curriculum_subproc_env_fn(log_dir: str, rank: int):
-    """
-    SubprocVecEnv (spawn) worker: ROS ayrı süreçte → GIL, SAC/PyTorch'tan ayrı.
-    Worker sürecinde Gym kaydı için mutlaka env paketi import edilmeli.
-    """
-    def _init():
-        import uav_route_planner.envs  
-        os.makedirs(log_dir, exist_ok=True)
-        path = os.path.join(log_dir, f"monitor_{rank}.csv")
-        env = gym.make("RouteCurriculumAgent-v0")
-        env = Monitor(env, filename=path)
-        env = TimestepSyncWrapper(env)
-        return env
-
-    return _init
-
-
 def _vec_env_call_method(training_env, method_name: str, *args, indices=None):
     venv = training_env.venv
     idx = indices if indices is not None else [0]
     return venv.env_method(method_name, *args, indices=idx)[0]
+
 
 _shutdown_lock = threading.Lock()
 _shutdown_done = False
@@ -106,12 +92,10 @@ def _do_shutdown():
                 path = os.path.join(_save_dir, "interrupted_model")
                 _model.save(path)
                 print(f"Model kaydedildi: {path}.zip")
-
             if _env is not None and _save_dir is not None:
                 vn_path = os.path.join(_save_dir, "vec_normalize_interrupted.pkl")
                 _env.save(vn_path)
                 print(f"VecNormalize kaydedildi: {vn_path}")
-
             if _trajectory_recorder is not None:
                 _trajectory_recorder.flush()
                 print("Trajectory data kaydedildi")
@@ -135,12 +119,13 @@ def _signal_handler(sig, frame):
     _do_shutdown()
     sys.exit(0)
 
+
 class CurriculumScheduler(BaseCallback):
     @staticmethod
     def default_stage_ranges():
-        t = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "550000"))
-        s1 = int(os.environ.get("ROUTE_STAGE1_END", "150000"))
-        s2 = int(os.environ.get("ROUTE_STAGE2_END", "300000"))
+        t = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "1000000"))
+        s1 = int(os.environ.get("ROUTE_STAGE1_END", "550000"))
+        s2 = int(os.environ.get("ROUTE_STAGE2_END", "800000"))
         s1 = max(0, min(s1, t))
         s2 = max(s1, min(s2, t))
         return {1: (0, s1), 2: (s1, s2), 3: (s2, t)}
@@ -154,7 +139,7 @@ class CurriculumScheduler(BaseCallback):
 
     def _on_training_start(self):
         if UNIFIED_MAZE:
-            return 
+            return
         if self._stage_pub is not None:
             return
         raw_env = self._get_raw_env()
@@ -165,7 +150,7 @@ class CurriculumScheduler(BaseCallback):
 
     def _on_step(self) -> bool:
         if UNIFIED_MAZE:
-            return True 
+            return True
         target_stage = self._stage_for_timestep(self.num_timesteps)
         if target_stage != self.current_stage:
             self._transition(target_stage)
@@ -197,18 +182,12 @@ class CurriculumScheduler(BaseCallback):
             except Exception as e:
                 print(f"Aktor spawn hatasi: {e}")
 
-        # ── Approach A: Reset Adam momentum buffers ──────────────────────────
-        # The critic has learned Stage N's value landscape. Its Adam m/v buffers
-        # carry that momentum into Stage N+1, causing the value_loss spike seen
-        # at transitions. Clearing .state resets momentum but keeps learned weights.
         try:
             self.model.policy.optimizer.state.clear()
             print(f"[CurriculumScheduler] Adam optimizer momentum reset for Stage {stage}.")
         except Exception as e:
             print(f"[CurriculumScheduler] Optimizer reset failed (non-fatal): {e}")
 
-        # Also clear the episode info buffer so stale Stage N episode stats
-        # don't skew the critic's bootstrapped return estimates.
         try:
             self.model.ep_info_buffer.clear()
         except Exception:
@@ -216,7 +195,6 @@ class CurriculumScheduler(BaseCallback):
 
         self.current_stage = stage
         self.logger.record("curriculum/stage", stage)
-
         print(f"\n{'=' * 60}")
         print(f"STAGE {stage} BASLADI @ {self.num_timesteps:,} timesteps")
         print(f"{'=' * 60}\n")
@@ -227,248 +205,87 @@ class CurriculumScheduler(BaseCallback):
         except Exception:
             return None
 
-_ROUTE_RW_INFO_KEYS = (
-    "rw_progress",
-    "rw_goal",
-    "rw_collision",
-    "rw_path",
-    "rw_astar_return",
-    "rw_path_drift",
-    "rw_threat",
-    "rw_wall_proximity",
-    "rw_time",
-    "rw_dormant_action_penalty", # new: penalty for non-zero policy output in dormant state
-    "rw_threat_away",      # new: bonus for increasing distance from nearest threat
-    "rw_lateral_escape",   # new: bonus for perpendicular movement vs threat axis
-)
-_ROUTE_ACTIVE_INFO_KEYS = (
-    "active_step_count",
-    "active_progress_sum",
-    "active_goal_dist_start",
-    "active_goal_dist_end",
-    "active_goal_dist_delta",
-    "active_threat_away_sum",
-    "active_lateral_escape_sum",
-)
 
-class _RouteEpisodeMetricsMixin:
-    def _init_episode_metrics(self, window=100):
-        self.ep_successes = deque(maxlen=window)
-        self.ep_collisions = deque(maxlen=window)
-        self.ep_timeouts = deque(maxlen=window)
-        self.ep_lengths = deque(maxlen=window)
-        self.ep_rewards = deque(maxlen=window)
-        self.ep_path_errors = deque(maxlen=window)
-        self.ep_threat_maxes = deque(maxlen=window)
-        self.ep_threat_gate_means = deque(maxlen=window)
-        self.ep_astar_follow_rates = deque(maxlen=window)
-        self.ep_rl_active_rates = deque(maxlen=window)
-        self.ep_raw_action_norms = deque(maxlen=window)
-        self.ep_effective_action_norms = deque(maxlen=window)
-        self.ep_rw_means = {k: deque(maxlen=window) for k in _ROUTE_RW_INFO_KEYS}
-        self.ep_active_means = {k: deque(maxlen=window) for k in _ROUTE_ACTIVE_INFO_KEYS}
+# ── Reward component keys (simplified) ──────────────────────────────────────
+# These match the info dict keys populated in step() of the env.
+# collision / success / timeout are terminal flags, not per-step scalars,
+# so they are tracked separately as episode outcomes.
 
-        self.ep_control_rl_rates = deque(maxlen=window)
-        self.ep_control_astar_rates = deque(maxlen=window)
 
-        self._step_control_rl = []
-        self._step_control_astar = []
+class RouteTrainingMonitor(BaseCallback):
+    """Logs episode outcomes and key diagnostics to TensorBoard / SB3 logger."""
 
-        self._last_active_info = {k: 0.0 for k in _ROUTE_ACTIVE_INFO_KEYS}
-        self._step_path_errors = []
-        self._step_threat_maxes = []
-        self._step_threat_gates = []
-        self._step_on_astar = []
-        self._step_rl_active_rates = []
-        self._step_raw_action_norms = []
-        self._step_effective_action_norms = []
-        self._step_rw = {k: [] for k in _ROUTE_RW_INFO_KEYS}
+    def __init__(self, log_freq=2048, window=100, verbose=0):
+        super().__init__(verbose)
+        self.log_freq = log_freq
+        self.window = window
+        self._ep_successes   = deque(maxlen=window)
+        self._ep_collisions  = deque(maxlen=window)
+        self._ep_timeouts    = deque(maxlen=window)
+        self._ep_lengths     = deque(maxlen=window)
+        self._ep_rewards     = deque(maxlen=window)
+        self._ep_min_lidar   = deque(maxlen=window)
 
-    def _collect_episode_metrics(self):
+    def _on_step(self) -> bool:
         infos = self.locals.get("infos", [])
         dones = self.locals.get("dones", [])
         for i, info in enumerate(infos):
             done_i = dones[i] if i < len(dones) else False
-            self._step_path_errors.append(info.get("path_error", 0.0))
-            self._step_threat_maxes.append(info.get("max_threat", 0.0))
-            self._step_threat_gates.append(float(info.get("threat_gate", 0.0)))
-            self._step_on_astar.append(float(info.get("on_astar", 0.0)))
-            self._step_rl_active_rates.append(1.0 if info.get("rl_mode") == "ACTIVE" else 0.0)
-            self._step_raw_action_norms.append(info.get("raw_action_norm", 0.0))
-            self._step_effective_action_norms.append(info.get("effective_action_norm", 0.0))
-            control_source = info.get("control_source", "")
-            self._step_control_rl.append(1.0 if control_source == "RL" else 0.0)
-            self._step_control_astar.append(1.0 if control_source == "ASTAR" else 0.0)
-
-            for k in _ROUTE_ACTIVE_INFO_KEYS:
-                if k in info:
-                    self._last_active_info[k] = float(info.get(k, 0.0))
-            for k in _ROUTE_RW_INFO_KEYS:
-                self._step_rw[k].append(float(info.get(k, 0.0)))
             if done_i:
-                self.ep_successes.append(1.0 if info.get("success") else 0.0)
-                self.ep_collisions.append(1.0 if info.get("collision") else 0.0)
-                self.ep_timeouts.append(1.0 if info.get("timeout") else 0.0)
-                ep_info = info.get("episode")
-                if ep_info:
-                    self.ep_lengths.append(ep_info.get("l", 0))
-                    self.ep_rewards.append(ep_info.get("r", 0.0))
-                if self._step_path_errors:
-                    self.ep_path_errors.append(np.mean(self._step_path_errors))
-                if self._step_threat_maxes:
-                    self.ep_threat_maxes.append(np.mean(self._step_threat_maxes))
-                if self._step_threat_gates:
-                    self.ep_threat_gate_means.append(np.mean(self._step_threat_gates))
-                if self._step_on_astar:
-                    self.ep_astar_follow_rates.append(np.mean(self._step_on_astar))
-                if self._step_rl_active_rates:
-                    self.ep_rl_active_rates.append(np.mean(self._step_rl_active_rates))
-                if self._step_raw_action_norms:
-                    self.ep_raw_action_norms.append(np.mean(self._step_raw_action_norms))
-                if self._step_effective_action_norms:
-                    self.ep_effective_action_norms.append(np.mean(self._step_effective_action_norms))
-                if self._step_control_rl:
-                    self.ep_control_rl_rates.append(np.mean(self._step_control_rl))
-                if self._step_control_astar:
-                    self.ep_control_astar_rates.append(np.mean(self._step_control_astar))
-
-                for k in _ROUTE_ACTIVE_INFO_KEYS:
-                    self.ep_active_means[k].append(float(self._last_active_info.get(k, 0.0)))
-                for k in _ROUTE_RW_INFO_KEYS:
-                    buf = self._step_rw[k]
-                    if buf:
-                        self.ep_rw_means[k].append(float(np.mean(buf)))
-                for k in _ROUTE_RW_INFO_KEYS:
-                    self._step_rw[k].clear()
-                self._step_path_errors.clear()
-                self._step_threat_maxes.clear()
-                self._step_threat_gates.clear()
-                self._step_on_astar.clear()
-                self._step_rl_active_rates.clear()
-                self._step_raw_action_norms.clear()
-                self._step_effective_action_norms.clear()
-                self._step_control_rl.clear()
-                self._step_control_astar.clear()
-                self._last_active_info = {k: 0.0 for k in _ROUTE_ACTIVE_INFO_KEYS}
-
-
-class RouteTrainingMonitor(_RouteEpisodeMetricsMixin, BaseCallback):
-    def __init__(self, log_freq=2048, compare_freq=10_000, window=100, verbose=0):
-        BaseCallback.__init__(self, verbose)
-        self.log_freq = log_freq
-        self.compare_freq = compare_freq
-        self.window = window
-        self._init_episode_metrics(window)
-
-    def _on_step(self) -> bool:
-        self._collect_episode_metrics()
+                self._ep_successes.append(1.0 if info.get("success") else 0.0)
+                self._ep_collisions.append(1.0 if info.get("collision") else 0.0)
+                self._ep_timeouts.append(1.0 if info.get("timeout") else 0.0)
+                ep = info.get("episode")
+                if ep:
+                    self._ep_lengths.append(ep.get("l", 0))
+                    self._ep_rewards.append(ep.get("r", 0.0))
+                self._ep_min_lidar.append(float(info.get("min_lidar_m", 30.0)))
 
         if self.num_timesteps % self.log_freq == 0:
-            self._log_training_metrics()
-            self._log_episode_metrics()
-
-        if self.num_timesteps % self.compare_freq == 0:
-            self._log_det_vs_stoch()
-
+            self._log()
         return True
 
-    def _log_training_metrics(self):
+    def _log(self):
+        if self._ep_successes:
+            self.logger.record("episode/success_rate",   np.mean(self._ep_successes))
+        if self._ep_collisions:
+            self.logger.record("episode/collision_rate", np.mean(self._ep_collisions))
+        if self._ep_timeouts:
+            self.logger.record("episode/timeout_rate",   np.mean(self._ep_timeouts))
+        if self._ep_lengths:
+            self.logger.record("episode/mean_length",    np.mean(self._ep_lengths))
+        if self._ep_rewards:
+            self.logger.record("episode/mean_reward",    np.mean(self._ep_rewards))
+        if self._ep_min_lidar:
+            self.logger.record("route/mean_min_lidar_m", np.mean(self._ep_min_lidar))
+
         vals = getattr(self.model.logger, "name_to_value", {})
-
-        entropy = vals.get("train/entropy_loss") or vals.get("train/entropy") or vals.get("train/ent_coef")
-        if entropy is not None:
-            self.logger.record("monitor/policy_entropy", entropy)
-        value_loss = vals.get("train/value_loss") or vals.get("train/critic_loss")
-        if value_loss is not None:
-            self.logger.record("monitor/value_loss", value_loss)
-
-        approx_kl = vals.get("train/approx_kl", None)
-        if approx_kl is not None:
-            self.logger.record("monitor/approx_kl", approx_kl)
-
-        clip_frac = vals.get("train/clip_fraction", None)
-        if clip_frac is not None:
-            self.logger.record("monitor/clip_fraction", clip_frac)
+        for src_key, dst_key in [
+            ("train/entropy_loss",  "monitor/policy_entropy"),
+            ("train/value_loss",    "monitor/value_loss"),
+            ("train/approx_kl",     "monitor/approx_kl"),
+            ("train/clip_fraction", "monitor/clip_fraction"),
+        ]:
+            v = vals.get(src_key)
+            if v is not None:
+                self.logger.record(dst_key, v)
 
         try:
             log_std = self.model.policy.log_std.data.cpu().numpy()
-            action_std = float(np.mean(np.exp(log_std)))
-            self.logger.record("monitor/action_std_mean", action_std)
-            self.logger.record("monitor/action_log_std_mean", float(np.mean(log_std)))
+            self.logger.record("monitor/action_std_mean", float(np.mean(np.exp(log_std))))
         except (AttributeError, RuntimeError):
             pass
 
-    def _log_episode_metrics(self):
-        if len(self.ep_successes) > 0:
-            self.logger.record("episode/success_rate", np.mean(self.ep_successes))
-        if len(self.ep_collisions) > 0:
-            self.logger.record("episode/collision_rate", np.mean(self.ep_collisions))
-        if len(self.ep_timeouts) > 0:
-            self.logger.record("episode/timeout_rate", np.mean(self.ep_timeouts))
-        if len(self.ep_lengths) > 0:
-            self.logger.record("episode/mean_length", np.mean(self.ep_lengths))
-        if len(self.ep_rewards) > 0:
-            self.logger.record("episode/mean_reward", np.mean(self.ep_rewards))
-        if len(self.ep_path_errors) > 0:
-            self.logger.record("route/mean_path_error", np.mean(self.ep_path_errors))
-        if len(self.ep_threat_maxes) > 0:
-            self.logger.record("route/mean_threat_exposure",
-                               np.mean(self.ep_threat_maxes))
-        if len(self.ep_threat_gate_means) > 0:
-            self.logger.record(
-                "route/mean_threat_gate", np.mean(self.ep_threat_gate_means)
-            )
-        if len(self.ep_astar_follow_rates) > 0:
-            self.logger.record(
-                "route/astar_follow_rate", np.mean(self.ep_astar_follow_rates)
-            )
-        if len(self.ep_rl_active_rates) > 0:
-            self.logger.record("route/rl_active_rate", np.mean(self.ep_rl_active_rates))
-        if len(self.ep_raw_action_norms) > 0:
-            self.logger.record("action/raw_action_norm", np.mean(self.ep_raw_action_norms))
-        if len(self.ep_effective_action_norms) > 0:
-            self.logger.record("action/effective_action_norm", np.mean(self.ep_effective_action_norms))
-        if len(self.ep_control_rl_rates) > 0:
-            self.logger.record("control/rl_rate", np.mean(self.ep_control_rl_rates))
-        if len(self.ep_control_astar_rates) > 0:
-            self.logger.record("control/astar_rate", np.mean(self.ep_control_astar_rates))
-
-        for k in _ROUTE_ACTIVE_INFO_KEYS:
-            dq = self.ep_active_means[k]
-            if len(dq) > 0:
-                self.logger.record(f"active/{k}", float(np.mean(dq)))
-        for k in _ROUTE_RW_INFO_KEYS:
-            dq = self.ep_rw_means[k]
-            if len(dq) > 0:
-                self.logger.record(f"reward/mean_{k}", float(np.mean(dq)))
-
-    def _log_det_vs_stoch(self):
-        try:
-            new_obs = self.locals.get("new_obs")
-            if new_obs is None:
-                return
-
-            det_action, _ = self.model.predict(new_obs, deterministic=True)
-            stoch_action = self.locals.get("actions")
-            if stoch_action is None:
-                return
-
-            diff = float(np.mean(np.abs(det_action - stoch_action)))
-            self.logger.record("monitor/det_stoch_action_diff", diff)
-        except Exception:
-            pass
 
 class TrajectoryRecorder(BaseCallback):
     def __init__(self, save_dir, max_episodes=500, verbose=0):
         super().__init__(verbose)
         self.save_dir = save_dir
         self.max_episodes = max_episodes
-
         self._current_positions = []
-        self._current_rewards = []
-        self._current_action_stds = []
-        self._episodes = []
-        self._episode_count = 0
+        self._current_rewards   = []
+        self._episodes          = []
+        self._episode_count     = 0
 
     def _on_step(self) -> bool:
         try:
@@ -480,56 +297,43 @@ class TrajectoryRecorder(BaseCallback):
         arr = np.asarray(pos, dtype=np.float64).ravel()
         if arr.size < 3:
             return True
-        x, y, z = float(arr[0]), float(arr[1]), float(arr[2])
-        self._current_positions.append([x, y, z])
+        self._current_positions.append([float(arr[0]), float(arr[1]), float(arr[2])])
 
         reward = self.locals.get("rewards", [0.0])
         self._current_rewards.append(float(reward[0]) if len(reward) > 0 else 0.0)
-
-        try:
-            log_std = self.model.policy.log_std.data.cpu().numpy()
-            mean_std = float(np.mean(np.exp(log_std)))
-        except (AttributeError, RuntimeError):
-            mean_std = 1.0
-        self._current_action_stds.append(mean_std)
 
         dones = self.locals.get("dones", [])
         infos = self.locals.get("infos", [])
 
         if len(dones) > 0 and dones[0]:
-            info = infos[0] if infos else {}
-            outcome = "success" if info.get("success") else \
-                      "collision" if info.get("collision") else \
-                      "timeout" if info.get("timeout") else "unknown"
-
-            episode_data = {
-                "episode": self._episode_count,
-                "stage": info.get("stage", 1),
-                "timestep": self.num_timesteps,
-                "positions": self._current_positions,
-                "rewards": self._current_rewards,
-                "action_stds": self._current_action_stds,
+            info    = infos[0] if infos else {}
+            outcome = (
+                "success"   if info.get("success")   else
+                "collision" if info.get("collision") else
+                "timeout"   if info.get("timeout")   else "unknown"
+            )
+            self._episodes.append({
+                "episode":      self._episode_count,
+                "stage":        info.get("stage", 1),
+                "timestep":     self.num_timesteps,
+                "positions":    self._current_positions,
+                "rewards":      self._current_rewards,
                 "total_reward": sum(self._current_rewards),
-                "length": len(self._current_positions),
-                "outcome": outcome,
-            }
-            self._episodes.append(episode_data)
-            self._episode_count += 1
-
-            self._current_positions = []
-            self._current_rewards = []
-            self._current_action_stds = []
-
+                "length":       len(self._current_positions),
+                "outcome":      outcome,
+            })
+            self._episode_count      += 1
+            self._current_positions  = []
+            self._current_rewards    = []
             if len(self._episodes) >= self.max_episodes:
                 self.flush()
-
         return True
 
     def flush(self):
         if not self._episodes:
             return
         os.makedirs(self.save_dir, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = os.path.join(self.save_dir, f"trajectories_{ts}.json")
         try:
             with open(path, "w") as f:
@@ -546,20 +350,17 @@ class TrajectoryRecorder(BaseCallback):
 class ProgressReporter(BaseCallback):
     def __init__(self, total_timesteps, report_freq=10_000):
         super().__init__()
-        self.total_timesteps = total_timesteps
-        self.report_freq = report_freq
-        self.start_time = None
+        self.total_timesteps  = total_timesteps
+        self.report_freq      = report_freq
+        self.start_time       = None
         self.last_report_time = None
         self.last_reported_step = 0
 
     def _on_training_start(self):
-        self.start_time = time.time()
-        self.last_report_time = self.start_time
+        self.start_time         = time.time()
+        self.last_report_time   = self.start_time
         self.last_reported_step = 0
-        print(
-            f"[train] learn dongusu basladi. Rapor her {self.report_freq:,} adimda (FPS/ETA).",
-            flush=True,
-        )
+        print(f"[train] Rapor her {self.report_freq:,} adimda.", flush=True)
 
     def _on_step(self) -> bool:
         if self.num_timesteps >= self.last_reported_step + self.report_freq:
@@ -568,20 +369,17 @@ class ProgressReporter(BaseCallback):
         return True
 
     def _report(self):
-        now = time.time()
-        elapsed_total = now - self.start_time
+        now              = time.time()
+        elapsed_total    = now - self.start_time
         elapsed_interval = now - self.last_report_time
-
-        fps = self.report_freq / max(elapsed_interval, 1e-6)
-        pct = 100.0 * self.num_timesteps / self.total_timesteps
-
-        remaining = max(0, self.total_timesteps - self.num_timesteps)
+        fps              = self.report_freq / max(elapsed_interval, 1e-6)
+        pct              = 100.0 * self.num_timesteps / self.total_timesteps
+        remaining        = max(0, self.total_timesteps - self.num_timesteps)
         if self.num_timesteps > 0:
             eta_sec = remaining * (elapsed_total / self.num_timesteps)
-            h, m = int(eta_sec // 3600), int((eta_sec % 3600) // 60)
+            h, m    = int(eta_sec // 3600), int((eta_sec % 3600) // 60)
         else:
             h, m = 0, 0
-
         print(
             f"\n[{pct:5.1f}%] {self.num_timesteps:,}/{self.total_timesteps:,} "
             f"| FPS: {fps:.0f} | ETA: {h}h {m}m",
@@ -595,36 +393,29 @@ class TrainingLogWriter(BaseCallback):
         super().__init__()
         self.log_file = log_file
         self.log_freq = log_freq
-        self.entries = []
+        self.entries  = []
 
     def _on_step(self) -> bool:
         if self.num_timesteps % self.log_freq != 0:
             return True
-
-        vals = getattr(self.model.logger, "name_to_value", {})
+        vals   = getattr(self.model.logger, "name_to_value", {})
         ep_buf = list(self.model.ep_info_buffer) if hasattr(self.model, "ep_info_buffer") else []
-
-        entry = {
-            "timesteps": self.num_timesteps,
-            "time": datetime.now().isoformat(),
-            "ep_rew_mean": float(np.mean([e["r"] for e in ep_buf])) if ep_buf else 0.0,
-            "ep_len_mean": float(np.mean([e["l"] for e in ep_buf])) if ep_buf else 0.0,
-            "entropy": vals.get("train/entropy_loss") or vals.get("train/entropy") or vals.get("train/ent_coef"),
-            "value_loss": vals.get("train/value_loss") or vals.get("train/critic_loss"),
-            "approx_kl": vals.get("train/approx_kl", None),
-            "rl_active_rate": vals.get("route/rl_active_rate"),
-            "control_rl_rate": vals.get("control/rl_rate"),
-            "control_astar_rate": vals.get("control/astar_rate"),
-            "active_goal_dist_delta": vals.get("active/active_goal_dist_delta"),
-            "active_progress_sum": vals.get("active/active_progress_sum"),
-            "active_threat_away_sum": vals.get("active/active_threat_away_sum"),
-            "active_lateral_escape_sum": vals.get("active/active_lateral_escape_sum"),
+        entry  = {
+            "timesteps":    self.num_timesteps,
+            "time":         datetime.now().isoformat(),
+            "ep_rew_mean":  float(np.mean([e["r"] for e in ep_buf])) if ep_buf else 0.0,
+            "ep_len_mean":  float(np.mean([e["l"] for e in ep_buf])) if ep_buf else 0.0,
+            "entropy":      vals.get("train/entropy_loss") or vals.get("train/entropy"),
+            "value_loss":   vals.get("train/value_loss"),
+            "approx_kl":    vals.get("train/approx_kl"),
+            "success_rate":    vals.get("episode/success_rate"),
+            "collision_rate":  vals.get("episode/collision_rate"),
+            "timeout_rate":    vals.get("episode/timeout_rate"),
+            "mean_min_lidar_m": vals.get("route/mean_min_lidar_m"),
         }
         self.entries.append(entry)
-
         if len(self.entries) % 10 == 0:
             self._flush()
-
         return True
 
     def _flush(self):
@@ -641,184 +432,174 @@ class TrainingLogWriter(BaseCallback):
         self._flush()
 
 
-class PlotSaverCallback(_RouteEpisodeMetricsMixin, BaseCallback):
+class PlotSaverCallback(BaseCallback):
+    """
+    Plots three clean figures every `save_freq` steps:
+      1. Training overview  — reward, outcome rates, episode length, policy diagnostics
+      2. Obstacle proximity — mean min-lidar per episode, collision/safe rates
+    """
+
     def __init__(self, save_dir, record_freq=2048, save_freq=50_000, window=100, verbose=0):
-        BaseCallback.__init__(self, verbose)
-        self.save_dir = save_dir
+        super().__init__(verbose)
+        self.save_dir    = save_dir
         self.record_freq = record_freq
-        self.save_freq = save_freq
-        self.window = window
-        self._init_episode_metrics(window)
-        self.history = []  
+        self.save_freq   = save_freq
+        self.window      = window
+        self.history     = []
+
+        self._ep_successes  = deque(maxlen=window)
+        self._ep_collisions = deque(maxlen=window)
+        self._ep_timeouts   = deque(maxlen=window)
+        self._ep_lengths    = deque(maxlen=window)
+        self._ep_rewards    = deque(maxlen=window)
+        self._ep_min_lidar  = deque(maxlen=window)
 
     def _on_step(self) -> bool:
         if not HAS_MATPLOTLIB:
             return True
 
-        self._collect_episode_metrics()
+        infos = self.locals.get("infos", [])
+        dones = self.locals.get("dones", [])
+        for i, info in enumerate(infos):
+            if i < len(dones) and dones[i]:
+                self._ep_successes.append(1.0 if info.get("success") else 0.0)
+                self._ep_collisions.append(1.0 if info.get("collision") else 0.0)
+                self._ep_timeouts.append(1.0 if info.get("timeout") else 0.0)
+                ep = info.get("episode")
+                if ep:
+                    self._ep_lengths.append(ep.get("l", 0))
+                    self._ep_rewards.append(ep.get("r", 0.0))
+                self._ep_min_lidar.append(float(info.get("min_lidar_m", 30.0)))
 
         if self.num_timesteps % self.record_freq == 0 and self.num_timesteps > 0:
             self._record()
         if self.num_timesteps % self.save_freq == 0 and self.num_timesteps > 0:
             self._save_plots()
-
         return True
 
     def _record(self):
-        vals = getattr(self.model.logger, "name_to_value", {})
+        vals   = getattr(self.model.logger, "name_to_value", {})
         ep_buf = list(self.model.ep_info_buffer) if hasattr(self.model, "ep_info_buffer") else []
-
-        entry = {
-            "timesteps": self.num_timesteps,
-            "entropy": vals.get("train/entropy_loss") or vals.get("train/entropy") or vals.get("train/ent_coef"),
-            "value_loss": vals.get("train/value_loss") or vals.get("train/critic_loss"),
-            "approx_kl": vals.get("train/approx_kl"),
-            "ep_rew_mean": float(np.mean([e["r"] for e in ep_buf])) if ep_buf else 0.0,
-            "ep_len_mean": float(np.mean([e["l"] for e in ep_buf])) if ep_buf else 0.0,
-            "success_rate": float(np.mean(self.ep_successes)) if self.ep_successes else 0.0,
-            "collision_rate": float(np.mean(self.ep_collisions)) if self.ep_collisions else 0.0,
-            "timeout_rate": float(np.mean(self.ep_timeouts)) if self.ep_timeouts else 0.0,
-            "path_error": float(np.mean(self.ep_path_errors)) if self.ep_path_errors else 0.0,
-            "threat_exposure": float(np.mean(self.ep_threat_maxes)) if self.ep_threat_maxes else 0.0,
-            "mean_threat_gate": float(np.mean(self.ep_threat_gate_means)) if self.ep_threat_gate_means else 0.0,
-            "astar_follow_rate": float(np.mean(self.ep_astar_follow_rates)) if self.ep_astar_follow_rates else 0.0,
-            "rl_active_rate": float(np.mean(self.ep_rl_active_rates)) if self.ep_rl_active_rates else 0.0,
-            "raw_action_norm": float(np.mean(self.ep_raw_action_norms)) if self.ep_raw_action_norms else 0.0,
-            "effective_action_norm": float(np.mean(self.ep_effective_action_norms)) if self.ep_effective_action_norms else 0.0,
-            "control_rl_rate": float(np.mean(self.ep_control_rl_rates)) if self.ep_control_rl_rates else 0.0,
-            "control_astar_rate": float(np.mean(self.ep_control_astar_rates)) if self.ep_control_astar_rates else 0.0,
+        entry  = {
+            "timesteps":       self.num_timesteps,
+            "ep_rew_mean":     float(np.mean([e["r"] for e in ep_buf])) if ep_buf else 0.0,
+            "ep_len_mean":     float(np.mean([e["l"] for e in ep_buf])) if ep_buf else 0.0,
+            "entropy":         vals.get("train/entropy_loss") or vals.get("train/entropy"),
+            "value_loss":      vals.get("train/value_loss"),
+            "approx_kl":       vals.get("train/approx_kl"),
+            "success_rate":    float(np.mean(self._ep_successes))  if self._ep_successes  else 0.0,
+            "collision_rate":  float(np.mean(self._ep_collisions)) if self._ep_collisions else 0.0,
+            "timeout_rate":    float(np.mean(self._ep_timeouts))   if self._ep_timeouts   else 0.0,
+            "mean_min_lidar_m": float(np.mean(self._ep_min_lidar)) if self._ep_min_lidar  else 30.0,
         }
-        for k in _ROUTE_ACTIVE_INFO_KEYS:
-            dq = self.ep_active_means[k]
-            entry[f"mean_{k}"] = float(np.mean(dq)) if dq else 0.0
-        for k in _ROUTE_RW_INFO_KEYS:
-            dq = self.ep_rw_means[k]
-            entry[f"mean_{k}"] = float(np.mean(dq)) if dq else 0.0
         self.history.append(entry)
 
     def _save_plots(self):
         if not self.history:
             return
         os.makedirs(self.save_dir, exist_ok=True)
-        ts = [h["timesteps"] for h in self.history]
+        ts_x = [h["timesteps"] for h in self.history]
+        step  = self.num_timesteps
 
-        fig, axes = plt.subplots(2, 3, figsize=(14, 9))
-        fig.suptitle(f"Route Curriculum Training — {self.num_timesteps:,} steps", fontsize=12)
+        # ── Figure 1: Training overview (2×3) ─────────────────────────────
+        fig, axes = plt.subplots(2, 3, figsize=(14, 8))
+        fig.suptitle(f"Training overview — {step:,} steps", fontsize=12)
 
         ax = axes[0, 0]
-        ax.plot(ts, [h["ep_rew_mean"] for h in self.history], "b-", label="Reward")
-        ax.set_title("Mean Episode Reward")
-        ax.legend()
+        ax.plot(ts_x, [h["ep_rew_mean"] for h in self.history], "b-")
+        ax.set_title("Mean episode reward")
+        ax.set_xlabel("Timesteps")
         ax.grid(True, alpha=0.3)
 
         ax = axes[0, 1]
-        ax.plot(ts, [h["success_rate"] for h in self.history], "g-", label="Success")
-        ax.plot(ts, [h["collision_rate"] for h in self.history], "r-", label="Collision")
-        ax.plot(ts, [h["timeout_rate"] for h in self.history], "orange", label="Timeout")
-        ax.set_title("Outcome Rates")
-        ax.legend()
+        ax.plot(ts_x, [h["success_rate"]   for h in self.history], "g-",      label="Success")
+        ax.plot(ts_x, [h["collision_rate"] for h in self.history], "r-",      label="Collision")
+        ax.plot(ts_x, [h["timeout_rate"]   for h in self.history], color="orange", label="Timeout")
+        ax.set_title("Episode outcome rates")
+        ax.set_xlabel("Timesteps")
+        ax.set_ylim(0, 1)
+        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
         ax = axes[0, 2]
-        ax.plot(ts, [h["ep_len_mean"] for h in self.history], "purple")
-        ax.set_title("Mean Episode Length")
+        ax.plot(ts_x, [h["ep_len_mean"] for h in self.history], color="purple")
+        ax.set_title("Mean episode length")
+        ax.set_xlabel("Timesteps")
         ax.grid(True, alpha=0.3)
 
         ax = axes[1, 0]
-        ent_ts = [h["timesteps"] for h in self.history if h["entropy"] is not None]
-        ent_vals = [h["entropy"] for h in self.history if h["entropy"] is not None]
-        if ent_ts and ent_vals:
-            ax.plot(ent_ts, ent_vals, "b-")
-        ax.set_title("Policy Entropy")
+        ent_x = [h["timesteps"] for h in self.history if h.get("entropy") is not None]
+        ent_y = [h["entropy"]   for h in self.history if h.get("entropy") is not None]
+        if ent_x:
+            ax.plot(ent_x, ent_y, "b-")
+        ax.set_title("Policy entropy")
+        ax.set_xlabel("Timesteps")
         ax.grid(True, alpha=0.3)
 
         ax = axes[1, 1]
-        vl_ts = [h["timesteps"] for h in self.history if h["value_loss"] is not None]
-        vl_vals = [h["value_loss"] for h in self.history if h["value_loss"] is not None]
-        if vl_ts and vl_vals:
-            ax.plot(vl_ts, vl_vals, "r-")
-        ax.set_title("Value Loss")
+        vl_x = [h["timesteps"]  for h in self.history if h.get("value_loss") is not None]
+        vl_y = [h["value_loss"] for h in self.history if h.get("value_loss") is not None]
+        if vl_x:
+            ax.plot(vl_x, vl_y, "r-")
+        ax.set_title("Value loss")
+        ax.set_xlabel("Timesteps")
         ax.grid(True, alpha=0.3)
 
         ax = axes[1, 2]
-        ax.plot(ts, [h["path_error"] for h in self.history], "b-", label="Path Error")
-        ax.plot(ts, [h["threat_exposure"] for h in self.history], "r-", label="Threat")
-        ax.plot(ts, [h.get("astar_follow_rate", 0.0) for h in self.history], "g--", label="A* follow")
-        ax.set_title("Route Quality")
-        ax.legend()
+        kl_x = [h["timesteps"]  for h in self.history if h.get("approx_kl") is not None]
+        kl_y = [h["approx_kl"] for h in self.history if h.get("approx_kl") is not None]
+        if kl_x:
+            ax.plot(kl_x, kl_y, color="teal")
+        ax.set_title("Approx KL divergence")
+        ax.set_xlabel("Timesteps")
         ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        path = os.path.join(self.save_dir, f"training_plots_{self.num_timesteps}.png")
-        plt.savefig(path, dpi=150, bbox_inches="tight")
+        out = os.path.join(self.save_dir, f"overview_{step}.png")
+        plt.savefig(out, dpi=150, bbox_inches="tight")
         plt.close(fig)
-        if self.verbose:
-            print(f"Grafikler kaydedildi: {path}")
-        fig_rw, axes_rw = plt.subplots(3, 3, figsize=(12, 10))
-        fig_rw.suptitle(
-            f"Reward components (mean per episode, window) — {self.num_timesteps:,} steps",
-            fontsize=11,
-        )
-        for ax, k in zip(axes_rw.flat, _ROUTE_RW_INFO_KEYS):
-            key = f"mean_{k}"
-            ax.plot(ts, [h.get(key, 0.0) for h in self.history], linewidth=1.0)
-            ax.set_title(k, fontsize=9)
-            ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        path_rw = os.path.join(
-            self.save_dir, f"training_reward_rw_{self.num_timesteps}.png"
-        )
-        plt.savefig(path_rw, dpi=150, bbox_inches="tight")
-        plt.close(fig_rw)
-        if self.verbose:
-            print(f"Ödül bileşen grafikleri: {path_rw}")
 
-        fig_active, axes_active = plt.subplots(2, 2, figsize=(12, 8))
-        fig_active.suptitle(
-            f"Active-control diagnostics — {self.num_timesteps:,} steps",
-            fontsize=11,
-        )
+        # ── Figure 2: Obstacle proximity ──────────────────────────────────
+        fig2, axes2 = plt.subplots(1, 2, figsize=(10, 4))
+        fig2.suptitle(f"Obstacle proximity — {step:,} steps", fontsize=12)
 
-        ax = axes_active[0, 0]
-        ax.plot(ts, [h.get("control_rl_rate", 0.0) for h in self.history], label="RL control rate")
-        ax.plot(ts, [h.get("control_astar_rate", 0.0) for h in self.history], label="A* control rate")
-        ax.set_title("Control Source Rates")
-        ax.legend()
+        ax = axes2[0]
+        ax.plot(ts_x, [h["mean_min_lidar_m"] for h in self.history], color="darkorange")
+        ax.axhline(y=2.0, color="red", linestyle="--", linewidth=0.8, label="WARN threshold (2m)")
+        ax.axhline(y=0.6, color="darkred", linestyle=":", linewidth=0.8, label="Collision threshold (0.6m)")
+        ax.set_title("Mean min lidar per episode (m)")
+        ax.set_xlabel("Timesteps")
+        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
-        ax = axes_active[0, 1]
-        ax.plot(ts, [h.get("mean_active_step_count", 0.0) for h in self.history])
-        ax.set_title("Active Step Count")
-        ax.grid(True, alpha=0.3)
-
-        ax = axes_active[1, 0]
-        ax.plot(ts, [h.get("mean_active_goal_dist_delta", 0.0) for h in self.history], label="Goal Dist Delta")
-        ax.plot(ts, [h.get("mean_active_progress_sum", 0.0) for h in self.history], label="Progress Sum")
-        ax.set_title("Active Progress")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-
-        ax = axes_active[1, 1]
-        ax.plot(ts, [h.get("mean_active_threat_away_sum", 0.0) for h in self.history], label="Threat Away")
-        ax.plot(ts, [h.get("mean_active_lateral_escape_sum", 0.0) for h in self.history], label="Lateral Escape")
-        ax.set_title("Active Avoidance Rewards")
-        ax.legend()
+        ax = axes2[1]
+        ax.stackplot(
+            ts_x,
+            [h["success_rate"]   for h in self.history],
+            [h["collision_rate"] for h in self.history],
+            [h["timeout_rate"]   for h in self.history],
+            labels=["Success", "Collision", "Timeout"],
+            colors=["#4CAF50", "#F44336", "#FF9800"],
+            alpha=0.75,
+        )
+        ax.set_title("Outcome composition")
+        ax.set_xlabel("Timesteps")
+        ax.set_ylim(0, 1)
+        ax.legend(fontsize=8, loc="upper left")
         ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        path_active = os.path.join(
-            self.save_dir, f"training_active_diag_{self.num_timesteps}.png"
-        )
-        plt.savefig(path_active, dpi=150, bbox_inches="tight")
-        plt.close(fig_active)
+        out2 = os.path.join(self.save_dir, f"proximity_{step}.png")
+        plt.savefig(out2, dpi=150, bbox_inches="tight")
+        plt.close(fig2)
+
         if self.verbose:
-            print(f"Active diagnostic grafikleri: {path_active}")
+            print(f"Grafikler kaydedildi: {out}, {out2}")
 
     def _on_training_end(self):
         if HAS_MATPLOTLIB and self.history:
             self._save_plots()
-            if self.verbose:
-                print(f"Final grafikler: {self.save_dir}")
+
 
 TOTAL_TIMESTEPS = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "550000"))
 
@@ -839,20 +620,17 @@ def main(args=None):
 
     try:
         import torch
-
         torch.set_num_threads(int(os.environ.get("TORCH_NUM_THREADS", "1")))
     except ImportError:
         pass
 
-    run_name = f"RouteCurriculum_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_name  = f"RouteCurriculum_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     models_dir = os.path.abspath(os.path.join("models", run_name))
-    log_dir = os.path.abspath(os.path.join("logs", run_name))
-    traj_dir = os.path.abspath(os.path.join(log_dir, "trajectories"))
-    plots_dir = os.path.abspath(os.path.join(log_dir, "plots"))
-    os.makedirs(models_dir, exist_ok=True)
-    os.makedirs(log_dir, exist_ok=True)
-    os.makedirs(traj_dir, exist_ok=True)
-    os.makedirs(plots_dir, exist_ok=True)
+    log_dir    = os.path.abspath(os.path.join("logs",   run_name))
+    traj_dir   = os.path.abspath(os.path.join(log_dir,  "trajectories"))
+    plots_dir  = os.path.abspath(os.path.join(log_dir,  "plots"))
+    for d in (models_dir, log_dir, traj_dir, plots_dir):
+        os.makedirs(d, exist_ok=True)
     _save_dir = models_dir
 
     old = glob.glob(f"{models_dir}/*.zip")
@@ -871,25 +649,23 @@ def main(args=None):
     print(f"Logs:    {log_dir}", flush=True)
     print(f"Total:   {TOTAL_TIMESTEPS:,} timesteps", flush=True)
     if UNIFIED_MAZE:
-        print(f"Mode:    BIRLESIK MAZE (pozisyon bazli stage, teleport yok)", flush=True)
+        print("Mode:    BIRLESIK MAZE (pozisyon bazli stage)", flush=True)
     else:
         sr = CurriculumScheduler.default_stage_ranges()
-        print(
-            f"Stages:  1 {sr[1]} | 2 {sr[2]} | 3 {sr[3]} (env: ROUTE_STAGE*_END)",
-            flush=True,
-        )
+        print(f"Stages:  1 {sr[1]} | 2 {sr[2]} | 3 {sr[3]}", flush=True)
+    print("Reward:  +2 progress | +1 safe | +100 goal | -5 too-close | -0.1/step | -100 crash",
+          flush=True)
     if not HAS_MATPLOTLIB:
-        print("Not:    Grafik kaydi icin: pip install matplotlib", flush=True)
-    print("VecEnv:  DummyVecEnv — PPO+ros ayni proses", flush=True)
+        print("Not:     Grafik icin: pip install matplotlib", flush=True)
     print("=" * 60, flush=True)
 
     scheduler_node = None
-    stage_pub = None
-    ros_thread = None
+    stage_pub      = None
+    ros_thread     = None
     if not UNIFIED_MAZE:
         scheduler_node = rclpy.create_node("train_route_curriculum_scheduler")
-        stage_pub = scheduler_node.create_publisher(Int32, "/route/set_stage", 10)
-        ros_thread = threading.Thread(target=rclpy.spin, args=(scheduler_node,), daemon=True)
+        stage_pub      = scheduler_node.create_publisher(Int32, "/route/set_stage", 10)
+        ros_thread     = threading.Thread(target=rclpy.spin, args=(scheduler_node,), daemon=True)
         ros_thread.start()
 
     def make_env():
@@ -899,6 +675,7 @@ def main(args=None):
         return env
 
     vec_env = DummyVecEnv([make_env])
+
     HYPERPARAMS = {
         "learning_rate": 3e-4,
         "n_steps":       2048,
@@ -907,7 +684,7 @@ def main(args=None):
         "gamma":         0.99,
         "gae_lambda":    0.95,
         "clip_range":    0.2,
-        "ent_coef":      0.05,
+        "ent_coef":      0.01,
         "vf_coef":       0.5,
         "max_grad_norm": 0.5,
     }
@@ -915,9 +692,9 @@ def main(args=None):
     env = VecNormalize(
         vec_env,
         norm_obs=True,
-        norm_reward=False,
+        norm_reward=True,
         clip_obs=10.0,
-        clip_reward=5.0,
+        clip_reward=10.0,
         gamma=HYPERPARAMS["gamma"],
     )
     _env = env
@@ -936,75 +713,40 @@ def main(args=None):
         ),
     )
     _model = model
-    curriculum_scheduler = CurriculumScheduler(verbose=1, stage_pub=stage_pub)
-
-    route_monitor = RouteTrainingMonitor(
-        log_freq=2048, compare_freq=10_000, window=100,
-    )
-
-    trajectory_recorder = TrajectoryRecorder(
-        save_dir=traj_dir, max_episodes=200,
-    )
-    _trajectory_recorder = trajectory_recorder
-
-    progress_reporter = ProgressReporter(
-        total_timesteps=TOTAL_TIMESTEPS,
-        report_freq=int(os.environ.get("TRAIN_PROGRESS_FREQ", "1000")),
-    )
-
-    checkpoint_cb = CheckpointCallback(
-        save_freq=50_000,
-        save_path=models_dir,
-        name_prefix="route_curriculum",
-        save_vecnormalize=True,
-        verbose=1,
-    )
-
-    training_log = TrainingLogWriter(
-        log_file=os.path.join(log_dir, "training_log.json"),
-        log_freq=5_000,
-    )
-
-    plot_saver = PlotSaverCallback(
-        save_dir=plots_dir,
-        record_freq=2048,
-        save_freq=50_000,
-        verbose=1,
-    )
-
-    timestep_sync_cb = SyncSB3TimestepCallback()
 
     callbacks = CallbackList([
-        timestep_sync_cb,
-        curriculum_scheduler,
-        route_monitor,
-        trajectory_recorder,
-        progress_reporter,
-        checkpoint_cb,
-        training_log,
-        plot_saver,
+        SyncSB3TimestepCallback(),
+        CurriculumScheduler(verbose=1, stage_pub=stage_pub),
+        RouteTrainingMonitor(log_freq=2048, window=100),
+        TrajectoryRecorder(save_dir=traj_dir, max_episodes=200),
+        ProgressReporter(
+            total_timesteps=TOTAL_TIMESTEPS,
+            report_freq=int(os.environ.get("TRAIN_PROGRESS_FREQ", "1000")),
+        ),
+        CheckpointCallback(
+            save_freq=50_000,
+            save_path=models_dir,
+            name_prefix="route_curriculum",
+            save_vecnormalize=True,
+            verbose=1,
+        ),
+        TrainingLogWriter(
+            log_file=os.path.join(log_dir, "training_log.json"),
+            log_freq=5_000,
+        ),
+        PlotSaverCallback(
+            save_dir=plots_dir,
+            record_freq=2048,
+            save_freq=50_000,
+            verbose=1,
+        ),
     ])
 
-    print("", flush=True)
-    print("!" * 60, flush=True)
-    print("PPO BASLANGIC NOTU (On-Policy Transition)", flush=True)
-    print(
-        f"  Total Timesteps: {TOTAL_TIMESTEPS} | Stage 1 End: 70k | Stage 2 End: 140k",
-        flush=True,
-    )
-    _step_m = float(os.environ.get("ROUTE_STEP_SIZE", "0.3"))
-    print(
-        f"  ROUTE_STEP_SIZE={_step_m} m  (xy residual; yumusak: 0.2, varsayilan 0.3)",
-        flush=True,
-    )
-    print("!" * 60, flush=True)
-    print(
-        "\nEgitim basliyor... (Symmetric PPO)\n",
-        flush=True,
-    )
+    print("\nEgitim basliyor...\n", flush=True)
 
     SAVE_INTERVAL = 50_000
     steps_done = 0
+    _trajectory_recorder = callbacks.callbacks[3]  # TrajectoryRecorder
 
     while steps_done < TOTAL_TIMESTEPS:
         chunk = min(SAVE_INTERVAL, TOTAL_TIMESTEPS - steps_done)
@@ -1018,8 +760,8 @@ def main(args=None):
 
     model.save(os.path.join(models_dir, "final_model"))
     env.save(os.path.join(models_dir, "vec_normalize_final.pkl"))
-    trajectory_recorder.flush()
-    plot_saver._on_training_end()
+    _trajectory_recorder.flush()
+    callbacks.callbacks[7]._on_training_end()  # PlotSaverCallback
 
     print("\n" + "=" * 60)
     print("EGITIM TAMAMLANDI")

@@ -182,23 +182,37 @@ class LLMExecutorNode(Node):
         return cur + d
 
     def _has_arrived(self) -> bool:
+        if self.active_cmd is None:
+            return False
+
+        action = self.active_cmd.get("action", "")
+
         if any(v is None for v in [
             self.current_x, self.current_y, self.current_z,
             self.target_x,  self.target_y,  self.target_z,
         ]):
             return False
-        dist = math.sqrt(
-            (self.current_x - self.target_x)**2 +
-            (self.current_y - self.target_y)**2 +
-            (self.current_z - self.target_z)**2
+
+        pos_dist = math.sqrt(
+            (self.current_x - self.target_x) ** 2 +
+            (self.current_y - self.target_y) ** 2 +
+            (self.current_z - self.target_z) ** 2
         )
+
+        yaw_error = abs(self._norm(self.current_yaw - self.target_yaw))
+
         self._log_tick += 1
         if self._log_tick % 10 == 0:
             self.get_logger().info(
-                f"[Mesafe] {dist:.2f}m | "
-                f"cur_z={self.current_z:.2f} → tgt_z={self.target_z:.2f}"
+                f"[Arrived Check] action={action} | "
+                f"pos_dist={pos_dist:.2f} m | "
+                f"yaw_error={math.degrees(yaw_error):.1f} deg"
             )
-        return dist < self.arrival_threshold
+
+        if action in ("rotate_cw", "rotate_ccw"):
+            return yaw_error < math.radians(8.0)
+
+        return pos_dist < self.arrival_threshold
 
     def _pub_vehicle_cmd(self, command: int, **kw):
         msg = VehicleCommand()

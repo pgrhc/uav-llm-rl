@@ -367,19 +367,15 @@ class CurriculumManager:
 
         if stage == 1:
             # Stage 1: static humans every cell
-            self._spawn_systematic(STATIC_ACTORS, label="static", spacing_cells=1, max_spawn=200)
+            pass
 
         elif stage == 2:
-            self._remove_all()
-            # Stage 2: dynamic humans only — moving threats
-            self._spawn_systematic(DYNAMIC_ACTORS, label="dynamic", spacing_cells=1, max_spawn=100)
+            self._spawn_systematic(STATIC_ACTORS, label="static", spacing_cells=1, max_spawn=150)
+            
 
         elif stage == 3:
-
-            # Stage 3: mix of static + dynamic threats
-            self._spawn_systematic(
-                STATIC_ACTORS, label="mixed", spacing_cells=1, max_spawn=50
-            )
+            self._remove_all()
+            self._spawn_systematic(DYNAMIC_ACTORS, label="dynamic", spacing_cells=1, max_spawn=100)
 
         else:
             print(f"Unknown stage: {stage}")
