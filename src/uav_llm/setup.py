@@ -34,6 +34,12 @@ setup(
             "llm_raw_task_node = uav_llm.llm_raw_task:main",
             "plan_review_node = uav_llm.llm_plan_review:main",
             "plan_execution_node = uav_llm.llm_plan_execution:main",
+            "user_command_node = uav_llm.user_command_node:main",
+            "mission_interpreter_node = uav_llm.mission_interpreter_node:main",
+            "task_planner_node = uav_llm.task_planner_node:main",
+            "semantic_object_builder_node = uav_llm.semantic_object_builder_node:main",
+            "semantic_memory_node = uav_llm.semantic_memory_node:main",
+            "llm_scene_summary_node = uav_llm.llm_scene_summary_node:main",
         ],
     },
 )

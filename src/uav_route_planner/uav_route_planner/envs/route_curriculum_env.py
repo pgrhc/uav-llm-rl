@@ -13,7 +13,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Bool
 from nav_msgs.msg import Odometry, OccupancyGrid
 from geometry_msgs.msg import PoseStamped, PoseArray
 
@@ -77,22 +77,15 @@ class RouteCurriculumEnv(gym.Env):
 
     ACTOR_COLLISION_RADIUS = 1.5
     ACTOR_COLLISION_Z_MAX = 3.5
-
-    # ── Simplified reward constants ──────────────────────────────────────────
-    # +2   progress toward goal (scaled by distance delta)
-    # +1   safe from obstacles (min lidar >= LIDAR_WARN_M)
-    # +100 goal reached
-    # −5   flying too close to obstacles (min lidar < LIDAR_WARN_M)
-    # −0.1 per-step time penalty
-    # −100 collision (costmap / actor / lidar hit)
+    EPISODE_TIMEOUT_SEC = float(os.environ.get("ROUTE_EPISODE_TIMEOUT_SEC", "40.0"))
     RW_PROGRESS_SCALE    = float(os.environ.get("ROUTE_RW_PROGRESS_SCALE",    "1.5"))
     RW_SAFE_BONUS        = float(os.environ.get("ROUTE_RW_SAFE_BONUS",        "1.0"))
     RW_GOAL              = float(os.environ.get("ROUTE_RW_GOAL",              "100.0"))
     RW_TOO_CLOSE_PENALTY = float(os.environ.get("ROUTE_RW_TOO_CLOSE_PENALTY", "-2.0"))
     RW_TIME_PENALTY      = float(os.environ.get("ROUTE_RW_TIME_PENALTY",      "-0.1"))
-    RW_COLLISION_PENALTY = float(os.environ.get("ROUTE_RW_COLLISION_PENALTY", "-20.0"))
-    RW_SHIELD_PENALTY = float(os.environ.get("ROUTE_RW_SHIELD_PENALTY", "-8.0"))
-    RW_SHIELD_BACKOFF = float(os.environ.get("ROUTE_RW_SHIELD_BACKOFF", "-1.0"))
+    RW_COLLISION_PENALTY = float(os.environ.get("ROUTE_RW_COLLISION_PENALTY", "-50.0"))
+    RW_SHIELD_PENALTY = float(os.environ.get("ROUTE_RW_SHIELD_PENALTY", "-1.0"))
+    RW_SHIELD_BACKOFF = float(os.environ.get("ROUTE_RW_SHIELD_BACKOFF", "-1.5"))
     SHIELD_MIN_SCALE = float(os.environ.get("ROUTE_SHIELD_MIN_SCALE", "0.15"))
     SHIELD_SCALE_STEPS = int(os.environ.get("ROUTE_SHIELD_SCALE_STEPS", "6"))
     RW_PROGRESS_STEP_REWARD = float(os.environ.get("ROUTE_RW_PROGRESS_STEP_REWARD", "2.0"))
@@ -111,11 +104,9 @@ class RouteCurriculumEnv(gym.Env):
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(4,), dtype=np.float32
         )
+        
 
         self.observation_space = spaces.Dict({
-            "lidar_vector": spaces.Box(
-                low=-np.inf, high=np.inf, shape=(36,), dtype=np.float32
-            ),
             "threat_vector": spaces.Box(
                 low=-np.inf, high=np.inf, shape=(74,), dtype=np.float32
             ),
@@ -169,6 +160,16 @@ class RouteCurriculumEnv(gym.Env):
 
         self.node = rclpy.create_node("route_curriculum_env_node")
         self._running = True
+        self.episode_start_time = time.time()
+        self.recovery_done = False
+        self._needs_recovery_to_spawn = False
+        self.recovery_mode_pub = self.node.create_publisher(
+            Bool, "/route/recovery_mode", 10
+        )
+
+        self.node.create_subscription(
+            Bool, "/route/recovery_done", self._cb_recovery_done, 10
+        )
 
         qos_sensor = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -209,6 +210,37 @@ class RouteCurriculumEnv(gym.Env):
         if x < SECTION2_X_MAX:
             return 2
         return 3
+    
+    def _start_recovery(self):
+        self._needs_recovery_to_spawn = True
+
+        with self.cond:
+            self.recovery_done = False
+
+        msg = Bool()
+        msg.data = True
+        self.recovery_mode_pub.publish(msg)
+
+        self.node.get_logger().warn("Recovery START: /route/recovery_mode=True")
+
+    def _cb_recovery_done(self, msg):
+        if bool(msg.data) and getattr(self, "_needs_recovery_to_spawn", False):
+            with self.cond:
+                self.recovery_done = True
+            self.node.get_logger().warn("Recovery DONE sinyali alındı.")
+
+    def _wait_recovery_done(self):
+        while True:
+            with self.cond:
+                done = self.recovery_done
+
+            if done:
+                msg = Bool()
+                msg.data = False
+                self.recovery_mode_pub.publish(msg)
+                return True
+
+            time.sleep(0.1)
 
     def set_curriculum_stage(self, stage: int):
         self.curriculum_stage = stage
@@ -361,26 +393,32 @@ class RouteCurriculumEnv(gym.Env):
             gy = self._ep_goal_y if self._ep_goal_y is not None else self.goal_y
             gz = self.goal_z
             dx, dy, dz = self.drone_x, self.drone_y, self.drone_z
-            dyaw = 0.0
+            drone_yaw = self.drone_yaw
             dspeed = self.drone_speed
-        if gx is None:
+
+        if gx is None or gy is None:
             return np.zeros(7, dtype=np.float32)
 
         rel_x = gx - dx
         rel_y = gy - dy
         rel_z = (gz if gz is not None else dz) - dz
+
         dist = math.sqrt(rel_x * rel_x + rel_y * rel_y)
         dist_norm = min(dist / self.MAX_GOAL_DIST, 1.0)
         speed_norm = min(dspeed / self.MAX_SPEED, 1.0)
 
+        goal_angle = math.atan2(rel_y, rel_x)
+        bearing_error = goal_angle - drone_yaw
+        bearing_error = math.atan2(math.sin(bearing_error), math.cos(bearing_error))
+
         return np.array([
-            rel_x / self.MAX_GOAL_DIST,   # normalize et
-            rel_y / self.MAX_GOAL_DIST,   # normalize et
+            np.clip(rel_x / self.MAX_GOAL_DIST, -1.0, 1.0),
+            np.clip(rel_y / self.MAX_GOAL_DIST, -1.0, 1.0),
             np.clip(rel_z / 5.0, -1.0, 1.0),
             dist_norm,
             speed_norm,
-            math.sin(dyaw),
-            math.cos(dyaw),
+            math.sin(bearing_error),
+            math.cos(bearing_error),
         ], dtype=np.float32)
 
     def get_drone_position(self):
@@ -430,14 +468,21 @@ class RouteCurriculumEnv(gym.Env):
 
     def _get_obs(self) -> dict:
         with self.cond:
-            lidar_vec = self.threat_vector[self.LIDAR_START_IDX : self.LIDAR_END_IDX].copy()
             threat_vec = self.threat_vector.copy()
             threat_sc = self.threat_scores.copy()
+
         obs = {
-            "lidar_vector": np.nan_to_num(lidar_vec, nan=0.0, posinf=0.0, neginf=0.0),
-            "threat_vector": np.nan_to_num(threat_vec, nan=0.0, posinf=0.0, neginf=0.0),
-            "threat_scores": np.nan_to_num(np.clip(threat_sc, 0.0, 1.0), nan=0.0, posinf=0.0, neginf=0.0),
-            "goal_state": np.nan_to_num(self._build_goal_state(), nan=0.0, posinf=0.0, neginf=0.0),
+            "threat_vector": np.nan_to_num(
+                threat_vec, nan=0.0, posinf=0.0, neginf=0.0
+            ),
+            "threat_scores": np.nan_to_num(
+                np.clip(threat_sc, 0.0, 1.0),
+                nan=0.0, posinf=0.0, neginf=0.0
+            ),
+            "goal_state": np.nan_to_num(
+                self._build_goal_state(),
+                nan=0.0, posinf=0.0, neginf=0.0
+            ),
         }
         return obs
 
@@ -555,13 +600,23 @@ class RouteCurriculumEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        if getattr(self, "_needs_recovery_to_spawn", False):
+            self.node.get_logger().warn("Recovery bekleniyor: A* ile 0,0'a dönüş.")
+            self._wait_recovery_done()
+            self._needs_recovery_to_spawn = False
+        else:
+            with self.cond:
+                self.recovery_done = False
+            msg = Bool()
+            msg.data = False
+            self.recovery_mode_pub.publish(msg)
+        self.episode_start_time = time.time()
         self.prev_action = np.zeros(4, dtype=np.float32)
         self.smoothed_action = np.zeros(4, dtype=np.float32)
         self.step_count = 0
         self.episode_reward = 0.0
         self.episode_collisions = 0
         self.episode_successes = 0
-        # reset() içinde:
         self._prev_min_lidar_m = float("inf")
         with self.cond:
             self.new_threat = False
@@ -602,7 +657,7 @@ class RouteCurriculumEnv(gym.Env):
             self.action_ema_alpha * raw_action
             + (1.0 - self.action_ema_alpha) * self.smoothed_action
         )
-        current_step_size = 0.80
+        current_step_size = 1.20
 
         dx = float(self.smoothed_action[0]) * current_step_size
         dy = float(self.smoothed_action[1]) * current_step_size
@@ -642,16 +697,7 @@ class RouteCurriculumEnv(gym.Env):
         }
 
         dist = self._dist_to_goal()
-
-        # ── Lidar distance (used for safe/too-close decisions) ─────────────
         min_lidar_m = self._min_lidar_dist_m()
-
-        # ── Collision detection ────────────────────────────────────────────
-        #   Priority order: costmap > actor > lidar hard-limit > goal > obstacle
-        #
-        #   All three collision types now terminate the episode.
-        #   This avoids the PX4 internal state divergence that occurs when we
-        #   only do a Gazebo pose reset without also resetting PX4's EKF.
         with self.cond:
             drone_x_now = self.drone_x
             drone_y_now = self.drone_y
@@ -666,15 +712,7 @@ class RouteCurriculumEnv(gym.Env):
         actor_hit   = stage_cur in (2, 3) and self._check_actor_collision()
         lidar_hit   = self._check_lidar_collision()
 
-        # ── Simplified reward ──────────────────────────────────────────────
-        #   +2   progress toward goal   (scaled by metres closed per step)
-        #   +1   safe from obstacles    (min lidar >= LIDAR_WARN_M)
-        #   +100 goal reached
-        #   −5   flying too close       (min lidar < LIDAR_WARN_M)
-        #   −0.1 per-step time penalty
-        #   −100 any collision
-
-        reward = self.RW_TIME_PENALTY  # −0.1 every step
+        reward = self.RW_TIME_PENALTY 
         if shield_used:
             if applied_scale >= 0.0:
                 correction_ratio = 1.0 - applied_scale
@@ -685,16 +723,25 @@ class RouteCurriculumEnv(gym.Env):
             info["shield_penalty_applied"] = True
             info["shield_correction_ratio"] = float(correction_ratio)
 
+            severe_shield = backoff_used or applied_scale == 0.0
+
             if backoff_used:
                 reward += self.RW_SHIELD_BACKOFF
+
+            if severe_shield:
+                terminated = True
+                info["collision"] = True
+                info["collision_type"] = "shield_backoff" if backoff_used else "shield_blocked"
+                self.episode_collisions += 1
+
+                self._start_recovery()
 
             # terminated = True
             # info["collision"] = True
             # info["collision_type"] = "shield"
             # self.episode_collisions += 1
         elif costmap_hit or actor_hit or lidar_hit:
-            # ── Collision: terminate immediately, heavy penalty ────────────
-            reward += self.RW_COLLISION_PENALTY   # −100
+            reward += self.RW_COLLISION_PENALTY  
             terminated = True
             info["collision"] = True
             if costmap_hit:
@@ -708,44 +755,51 @@ class RouteCurriculumEnv(gym.Env):
                 f"[Collision] type={info['collision_type']} "
                 f"lidar_min={min_lidar_m:.2f}m"
             )
+            self._start_recovery()
 
         elif dist < self.GOAL_TOLERANCE:
-            # ── Goal reached ──────────────────────────────────────────────
-            reward += self.RW_GOAL   # +100
+            reward += self.RW_GOAL   
             terminated = True
             info["success"] = True
             self.episode_successes += 1
+            self._needs_recovery_to_spawn = False
+            msg = Bool()
+            msg.data = False
+            self.recovery_mode_pub.publish(msg)
+            self.node.get_logger().info("GOAL REACHED → episode reset")
 
         else:
-            # ── Progress (potansiyel bazlı) ────────────────────────────────
             if self.prev_dist_to_goal is not None:
                 progress = self.prev_dist_to_goal - dist
-                reward += self.RW_PROGRESS_SCALE * progress   # 2.0 * progress
+                positive_progress = max(0.0, progress)
+                reward += self.RW_PROGRESS_SCALE * positive_progress
                 if np.isfinite(progress):
                     info["progress"] = float(progress)
-
-            # ── Yön bonusu: goal'a doğru mu bakıyor? ──────────────────────
-            # Mevcut hareketi goal yönüyle karşılaştır
+                    info["positive_progress"] = float(positive_progress)
             with self.cond:
                 gx = self._ep_goal_x
                 gy = self._ep_goal_y
                 px, py = self.drone_x, self.drone_y
-            # if gx is not None:
-            #     goal_dir_x = gx - px
-            #     goal_dir_y = gy - py
-            #     goal_norm = math.hypot(goal_dir_x, goal_dir_y)
-            #     if goal_norm > 0.1:
-            #         goal_dir_x /= goal_norm
-            #         goal_dir_y /= goal_norm
-            #         # action dx, dy zaten step() içinde hesaplandı
-            #         heading_dot = dx * goal_dir_x + dy * goal_dir_y
-            #         # [-1, 1] arası → goal yönünde hareket ediyorsa pozitif
-            #         reward += 0.3 * heading_dot
-            #         info["heading_dot"] = float(heading_dot)
+            if gx is not None and gy is not None:
+                goal_dir_x = gx - px
+                goal_dir_y = gy - py
+                goal_norm = math.hypot(goal_dir_x, goal_dir_y)
+                if goal_norm > 0.1:
+                    goal_dir_x /= goal_norm
+                    goal_dir_y /= goal_norm
+                    act_norm = math.hypot(dx, dy)
+                    if act_norm > 1e-6:
+                        act_x = dx / act_norm
+                        act_y = dy / act_norm
+                        heading_dot = act_x * goal_dir_x + act_y * goal_dir_y
+                        heading_reward = max(0.0, heading_dot)
+                        reward += 0.5 * heading_reward
+                        info["heading_dot"] = float(heading_dot)
+                        info["heading_reward"] = float(heading_reward)
 
-            # ── Engel mesafesi ─────────────────────────────────────────────
+
             if min_lidar_m < self.LIDAR_WARN_M:
-                reward += self.RW_TOO_CLOSE_PENALTY   # −2.0
+                reward += self.RW_TOO_CLOSE_PENALTY   
                 info["too_close"] = True
                 if hasattr(self, '_prev_min_lidar_m'):
                     escape_delta = min_lidar_m - self._prev_min_lidar_m
@@ -758,9 +812,14 @@ class RouteCurriculumEnv(gym.Env):
 
             self._prev_min_lidar_m = min_lidar_m
 
-        if self.step_count >= self.MAX_EPISODE_STEPS:
+        elapsed_sec = time.time() - self.episode_start_time
+
+        if elapsed_sec >= self.EPISODE_TIMEOUT_SEC:
             truncated = True
             info["timeout"] = True
+            info["timeout_reason"] = "time_40s" if elapsed_sec >= self.EPISODE_TIMEOUT_SEC else "max_steps"
+
+            self._start_recovery()
 
         self.prev_dist_to_goal = dist
         self.prev_action = raw_action.copy()

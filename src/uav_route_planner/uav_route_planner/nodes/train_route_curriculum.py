@@ -206,15 +206,7 @@ class CurriculumScheduler(BaseCallback):
             return None
 
 
-# ── Reward component keys (simplified) ──────────────────────────────────────
-# These match the info dict keys populated in step() of the env.
-# collision / success / timeout are terminal flags, not per-step scalars,
-# so they are tracked separately as episode outcomes.
-
-
 class RouteTrainingMonitor(BaseCallback):
-    """Logs episode outcomes and key diagnostics to TensorBoard / SB3 logger."""
-
     def __init__(self, log_freq=2048, window=100, verbose=0):
         super().__init__(verbose)
         self.log_freq = log_freq
@@ -387,7 +379,22 @@ class ProgressReporter(BaseCallback):
         )
         self.last_report_time = now
 
+class EntropyDecayCallback(BaseCallback):
+    def __init__(self, decay=0.9995, min_ent_coef=0.005, update_freq=2048, verbose=0):
+        super().__init__(verbose)
+        self.decay = decay
+        self.min_ent_coef = min_ent_coef
+        self.update_freq = update_freq
 
+    def _on_step(self) -> bool:
+        if self.num_timesteps % self.update_freq == 0:
+            current = float(self.model.ent_coef)
+            new_ent = max(self.min_ent_coef, current * self.decay)
+            self.model.ent_coef = new_ent
+            self.logger.record("train/ent_coef", new_ent)
+
+        return True
+    
 class TrainingLogWriter(BaseCallback):
     def __init__(self, log_file, log_freq=5000):
         super().__init__()
@@ -433,12 +440,6 @@ class TrainingLogWriter(BaseCallback):
 
 
 class PlotSaverCallback(BaseCallback):
-    """
-    Plots three clean figures every `save_freq` steps:
-      1. Training overview  — reward, outcome rates, episode length, policy diagnostics
-      2. Obstacle proximity — mean min-lidar per episode, collision/safe rates
-    """
-
     def __init__(self, save_dir, record_freq=2048, save_freq=50_000, window=100, verbose=0):
         super().__init__(verbose)
         self.save_dir    = save_dir
@@ -653,7 +654,7 @@ def main(args=None):
     else:
         sr = CurriculumScheduler.default_stage_ranges()
         print(f"Stages:  1 {sr[1]} | 2 {sr[2]} | 3 {sr[3]}", flush=True)
-    print("Reward:  +2 progress | +1 safe | +100 goal | -5 too-close | -0.1/step | -100 crash",
+    print("Reward:  progress=max(0, Δdist) | +0.02 safe | +100 goal | -2 too-close | -0.1/step | collision env setting",
           flush=True)
     if not HAS_MATPLOTLIB:
         print("Not:     Grafik icin: pip install matplotlib", flush=True)
@@ -684,7 +685,7 @@ def main(args=None):
         "gamma":         0.99,
         "gae_lambda":    0.95,
         "clip_range":    0.2,
-        "ent_coef":      0.01,
+        "ent_coef":      0.05,
         "vf_coef":       0.5,
         "max_grad_norm": 0.5,
     }
@@ -692,9 +693,9 @@ def main(args=None):
     env = VecNormalize(
         vec_env,
         norm_obs=True,
-        norm_reward=True,
+        norm_reward=False,
         clip_obs=10.0,
-        clip_reward=10.0,
+        # clip_reward=10.0,
         gamma=HYPERPARAMS["gamma"],
     )
     _env = env
@@ -740,6 +741,7 @@ def main(args=None):
             save_freq=50_000,
             verbose=1,
         ),
+        EntropyDecayCallback(decay=0.9995, min_ent_coef=0.005, update_freq=9000),
     ])
 
     print("\nEgitim basliyor...\n", flush=True)

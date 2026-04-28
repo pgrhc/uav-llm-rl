@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-route_goal_navigator.py — stage-aware random goal publisher (no A*).
-"""
-
 import json
 import math
 import os
@@ -11,10 +7,11 @@ import threading
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry,Path
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import Int32
+from std_msgs.msg import Int32, Bool
+
 
 ROWS, COLS = 15, 15
 CELL_SIZE = 5.0
@@ -24,7 +21,7 @@ ORIGIN = (0.0, 0.0)
 ARRIVAL_DIST = 1.0
 GOAL_Z = 1.5
 MIN_GOAL_DIST_CELLS = 1
-MAX_GOAL_DIST_CELLS = 10
+MAX_GOAL_DIST_CELLS = 1
 GOAL_DISTANCE_GROWTH_EPISODES = 40
 INITIAL_MAX_GOAL_DIST_CELLS = 1
 RECENT_GOAL_MEMORY = 10
@@ -89,8 +86,17 @@ class RouteGoalNavigator(Node):
         self.goal_cell = None
         self._recent_goals = []
         self._goals_reached_count = 0
+        self.recovery_mode = False
+        self._last_recovery_start_cell = None
+        self.recovery_sub = self.create_subscription(
+            Bool, "/route/recovery_mode", self._cb_recovery_mode, 10
+        )
 
+        self.plan_pub = self.create_publisher(
+            Path, "/route/recovery_plan", 10
+        )
         self.timer = self.create_timer(0.5, self._loop)
+    
         self.get_logger().info("RouteGoalNavigator baslatildi (A* kapali, sadece goal publish)")
 
     def _cb_set_stage(self, msg: Int32):
@@ -99,6 +105,101 @@ class RouteGoalNavigator(Node):
         self.goal_cell = None
         self._goals_reached_count = 0
         self.get_logger().info(f"Stage degisti → {self.current_stage}")
+
+    def _cb_recovery_mode(self, msg: Bool):
+        self.recovery_mode = bool(msg.data)
+        self._last_recovery_start_cell = None
+
+        if self.recovery_mode:
+            self.get_logger().warn("Recovery mode aktif: 0,0 icin A* plan yayinlanacak.")
+        else:
+            self.get_logger().info("Recovery mode kapandi: normal goal publish devam.")
+
+    def _find_path_cells(self, start_cell, goal_cell):
+        from collections import deque
+
+        queue = deque([start_cell])
+        parent = {start_cell: None}
+
+        while queue:
+            r, c = queue.popleft()
+
+            if (r, c) == goal_cell:
+                break
+
+            if self.walls is None:
+                neighbors = [
+                    (r - 1, c),
+                    (r + 1, c),
+                    (r, c + 1),
+                    (r, c - 1),
+                ]
+            else:
+                cell = self.walls[r][c]
+                neighbors = []
+                if not cell.get("N", False):
+                    neighbors.append((r - 1, c))
+                if not cell.get("S", False):
+                    neighbors.append((r + 1, c))
+                if not cell.get("E", False):
+                    neighbors.append((r, c + 1))
+                if not cell.get("W", False):
+                    neighbors.append((r, c - 1))
+
+            for nr, nc in neighbors:
+                if not (0 <= nr < ROWS and 0 <= nc < COLS):
+                    continue
+                if (nr, nc) in parent:
+                    continue
+                if not self._is_cell_usable(nr, nc):
+                    continue
+
+                parent[(nr, nc)] = (r, c)
+                queue.append((nr, nc))
+
+        if goal_cell not in parent:
+            return []
+
+        path = []
+        cur = goal_cell
+        while cur is not None:
+            path.append(cur)
+            cur = parent[cur]
+
+        path.reverse()
+        return path
+
+    def _publish_recovery_plan(self, start_cell):
+        spawn_cell = DRONE_SPAWN_CELL
+
+        path_cells = self._find_path_cells(start_cell, spawn_cell)
+
+        if not path_cells:
+            self.get_logger().error("Recovery icin 0,0 path bulunamadi.")
+            return
+
+        path_msg = Path()
+        path_msg.header.stamp = self.get_clock().now().to_msg()
+        path_msg.header.frame_id = "map"
+
+        for cell in path_cells:
+            x, y = _cell_to_world(*cell)
+
+            pose = PoseStamped()
+            pose.header = path_msg.header
+            pose.pose.position.x = x
+            pose.pose.position.y = y
+            pose.pose.position.z = GOAL_Z
+            pose.pose.orientation.w = 1.0
+
+            path_msg.poses.append(pose)
+
+        self.plan_pub.publish(path_msg)
+
+        self.get_logger().warn(
+            f"Recovery /plan yayinlandi: {len(path_cells)} waypoint, hedef spawn/0,0"
+        )
+
 
     def _cb_odom(self, msg: Odometry):
         with self._pos_lock:
@@ -152,42 +253,27 @@ class RouteGoalNavigator(Node):
         return visited
 
     def _pick_goal_cell(self, curr_cell):
-        # Ulaşılabilir hücreler (BFS)
-        reachable = self._reachable_cells(curr_cell)
+        r, c = curr_cell
 
-        progress = min(1.0, self._goals_reached_count / max(float(GOAL_DISTANCE_GROWTH_EPISODES), 1.0))
-        dynamic_min_dist = int(round(
-            MIN_GOAL_DIST_CELLS + (MAX_GOAL_DIST_CELLS - MIN_GOAL_DIST_CELLS) * progress
-        ))
-        dynamic_max_dist = int(round(
-            INITIAL_MAX_GOAL_DIST_CELLS + (MAX_GOAL_DIST_CELLS - INITIAL_MAX_GOAL_DIST_CELLS) * progress
-        ))
-        dynamic_max_dist = max(dynamic_max_dist, dynamic_min_dist)
+        neighbors = [
+            (r - 1, c),
+            (r + 1, c),
+            (r, c - 1),
+            (r, c + 1),
+        ]
 
-        candidates = []
-        for (r, c) in reachable:           # ← sadece reachable içinden
-            if (r, c) == curr_cell:
+        valid = []
+        for nr, nc in neighbors:
+            if not (0 <= nr < ROWS and 0 <= nc < COLS):
                 continue
-            if not self._is_cell_usable(r, c):
+            if not self._is_cell_usable(nr, nc):
                 continue
-            manhattan_dist = abs(r - curr_cell[0]) + abs(c - curr_cell[1])
-            if manhattan_dist < dynamic_min_dist:
-                continue
-            if manhattan_dist > dynamic_max_dist:
-                continue
-            if (r, c) in self._recent_goals:
-                continue
-            candidates.append((r, c))
+            valid.append((nr, nc))
 
-        if not candidates:
-            self._recent_goals.clear()
-            candidates = [cell for cell in reachable
-                        if cell != curr_cell and self._is_cell_usable(*cell)]
+        if not valid:
+            return curr_cell
 
-        if not candidates:
-            return None
-        return random.choice(candidates)
-
+        return random.choice(valid)
 
     def _publish_goal(self, goal_cell):
         gx, gy = _cell_to_world(*goal_cell)
@@ -206,6 +292,11 @@ class RouteGoalNavigator(Node):
         with self._pos_lock:
             x, y = self.pos[0], self.pos[1]
         curr_cell = _world_to_cell(x, y)
+        if self.recovery_mode:
+            if curr_cell != self._last_recovery_start_cell:
+                self._publish_recovery_plan(curr_cell)
+                self._last_recovery_start_cell = curr_cell
+            return
 
         need_new_goal = self.goal_cell is None
         if self.goal_cell is not None:

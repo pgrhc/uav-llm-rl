@@ -79,7 +79,7 @@ class OffboardControl(Node):
         self.current_path = []
         self.current_pos_enu = [0.0, 0.0, 0.0]
         self.current_yaw = 0.0
-        self.mission_altitude = -1.8
+        self.mission_altitude = -1.4
         self.last_valid_yaw = 0.0
 
         self.in_turn_mode = False

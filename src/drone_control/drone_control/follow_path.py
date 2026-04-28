@@ -1,16 +1,4 @@
 #!/usr/bin/env python3
-"""
-PX4 offboard setpoint node for route RL.
-
-Only /route/waypoint_desired (or safety-filtered equivalent) is used as navigation input.
-If waypoint stream pauses beyond ROUTE_WP_TIMEOUT, node holds current pose safely.
-
-DEĞİŞİKLİK: EMERGENCY_STOP bloğu kaldırıldı.
-  - Eskiden: lidar < EMERGENCY_STOP_DIST olduğunda drone tamamen donuyordu ve
-    RL'den gelen kaçış waypoint'leri yok sayılıyordu → eğitim bozuluyordu.
-  - Şimdi: sadece SLOW_DOWN_DIST bandında yumuşak yavaşlama var.
-    Kaçış waypoint'ini env zaten yayınlıyor; bu node onu olduğu gibi uygular.
-"""
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
@@ -24,6 +12,8 @@ from px4_msgs.msg import VehicleStatus
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Float32MultiArray
+from nav_msgs.msg import Path
+from std_msgs.msg import Bool
 
 
 MAX_LOOKAHEAD = 1.5
@@ -35,7 +25,7 @@ TURN_ON_THRESHOLD  = 0.55
 TURN_OFF_THRESHOLD = 0.35
 
 SETPOINT_ALPHA = 0.85
-MAX_SETPOINT_STEP = 1.20
+MAX_SETPOINT_STEP = 1.50
 TIMER_PERIOD = 0.05
 MAX_ALLOWED_DIST_FROM_CURRENT = 2.0
 
@@ -50,9 +40,7 @@ PATH_RESET_DIST = 1.0
 
 ROUTE_WP_TIMEOUT = 0.8
 
-# EMERGENCY_STOP_DIST kaldırıldı — artık drone lidar nedeniyle donmaz.
-# RL env tarafından kaçış waypoint'i yayınlanır; bu node onu uygular.
-SLOW_DOWN_DIST = 1.2   # Bu mesafenin altında yumuşak yavaşlama hâlâ aktif.
+SLOW_DOWN_DIST = 1.2  
 
 MIN_ALTITUDE = 0.3
 MAX_ALTITUDE = 3.0
@@ -101,7 +89,7 @@ class OffboardControl(Node):
         self.vehicle_status_sub = self.create_subscription(
             VehicleStatus, '/fmu/out/vehicle_status_v1', self.vehicle_status_callback, qos_px4)
 
-        # Lidar distance from state_vec (yumuşak yavaşlama için)
+        
         self.min_lidar_dist = 999.0
         self.lidar_sub = self.create_subscription(
             Float32MultiArray, '/threat/state_vec', self.threat_cb, 10)
@@ -124,7 +112,20 @@ class OffboardControl(Node):
         self.offboard_mode_attempted = False
         self.arm_attempted = False
         self.initialization_complete = False
+        self.recovery_mode = False
+        self.recovery_path = []
+        self.recovery_idx = 0
+        self.recovery_done_pub = self.create_publisher(
+            Bool, "/route/recovery_done", 10
+        )
 
+        self.recovery_mode_sub = self.create_subscription(
+            Bool, "/route/recovery_mode", self.recovery_mode_callback, 10
+        )
+
+        self.plan_sub = self.create_subscription(
+            Path, "/route/recovery_plan", self.plan_callback, 10
+        )
         self.timer = self.create_timer(TIMER_PERIOD, self.timer_callback)
         self.get_logger().info(
             f"ADAPTİF MOD: Timer={TIMER_PERIOD}s | Alpha={self.SETPOINT_ALPHA} | "
@@ -141,6 +142,68 @@ class OffboardControl(Node):
             else:
                 self.min_lidar_dist = 999.0
 
+    def recovery_mode_callback(self, msg: Bool):
+        self.recovery_mode = bool(msg.data)
+
+        if self.recovery_mode:
+            self.get_logger().warn("RECOVERY MODE aktif: RL waypoint yok sayılacak, /plan takip edilecek.")
+            self.route_wp = None
+            self.route_wp_stamp = 0.0
+            self.sp_n = None
+            self.sp_e = None
+            self.recovery_idx = 0
+        else:
+            self.get_logger().info("RECOVERY MODE kapandı: RL waypoint tekrar aktif.")
+
+
+    def plan_callback(self, msg: Path):
+        if not self.recovery_mode:
+            return
+
+        self.recovery_path = [p.pose for p in msg.poses]
+        self.recovery_idx = 0
+
+        self.get_logger().warn(
+            f"Recovery A* path alındı: {len(self.recovery_path)} waypoint"
+        )
+
+    def _get_recovery_target_pose(self):
+        if not self.recovery_mode:
+            return None
+
+        if not self.recovery_path:
+            return None
+
+        curr_x = self.current_pos_enu[0]
+        curr_y = self.current_pos_enu[1]
+
+        while self.recovery_idx < len(self.recovery_path):
+            pose = self.recovery_path[self.recovery_idx]
+            px = pose.position.x
+            py = pose.position.y
+
+            dist = math.hypot(px - curr_x, py - curr_y)
+
+            if dist < WAYPOINT_REACHED_DIST:
+                self.recovery_idx += 1
+            else:
+                return pose
+
+        if self.recovery_idx >= len(self.recovery_path):
+            done = Bool()
+            done.data = True
+            self.recovery_done_pub.publish(done)
+            self.recovery_mode = False
+
+        self.get_logger().warn("Recovery path tamamlandı. Drone spawn/0,0 noktasına döndü.")
+
+        self.recovery_mode = False
+        self.recovery_path = []
+        self.recovery_idx = 0
+        self.sp_n = None
+        self.sp_e = None
+
+        return None
     def vehicle_status_callback(self, msg):
         self.vehicle_status = msg
         self.arming_state = msg.arming_state
@@ -250,9 +313,16 @@ class OffboardControl(Node):
         curr_east = self.current_pos_enu[0]
         curr_down = -self.current_pos_enu[2]
 
-        if self._has_active_route_wp():
-            t_enu = self.route_wp.position
-            q = self.route_wp.orientation
+        active_pose = None
+
+        if self.recovery_mode:
+            active_pose = self._get_recovery_target_pose()
+        elif self._has_active_route_wp():
+            active_pose = self.route_wp
+
+        if active_pose is not None:
+            t_enu = active_pose.position
+            q = active_pose.orientation
 
             # ENU -> NED dönüşümü
             target_north = t_enu.y
