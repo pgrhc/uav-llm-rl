@@ -21,10 +21,10 @@ ORIGIN = (0.0, 0.0)
 ARRIVAL_DIST = 1.0
 GOAL_Z = 1.5
 MIN_GOAL_DIST_CELLS = 1
-MAX_GOAL_DIST_CELLS = 1
-GOAL_DISTANCE_GROWTH_EPISODES = 40
-INITIAL_MAX_GOAL_DIST_CELLS = 1
-RECENT_GOAL_MEMORY = 10
+MAX_GOAL_DIST_CELLS = int(os.environ.get("ROUTE_MAX_GOAL_DIST_CELLS", "10"))
+INITIAL_MAX_GOAL_DIST_CELLS = int(os.environ.get("ROUTE_INITIAL_MAX_GOAL_DIST_CELLS", "1"))
+GOAL_DISTANCE_GROWTH_EPISODES = int(os.environ.get("ROUTE_GOAL_DISTANCE_GROWTH_EPISODES", "40"))
+RECENT_GOAL_MEMORY = int(os.environ.get("ROUTE_RECENT_GOAL_MEMORY", "10"))
 
 
 def _maze_origin():
@@ -218,62 +218,92 @@ class RouteGoalNavigator(Node):
     
     def _reachable_cells(self, start_cell):
         """BFS ile start_cell'den ulaşılabilen tüm hücreleri döndürür."""
+        return set(self._bfs_distances(start_cell).keys())
+
+    def _bfs_distances(self, start_cell):
+        """BFS ile start_cell'den her ulaşılabilen hücreye olan path mesafesini döndürür."""
         from collections import deque
-        visited = set()
+        distances = {start_cell: 0}
         queue = deque([start_cell])
-        visited.add(start_cell)
 
         while queue:
             r, c = queue.popleft()
+            d = distances[(r, c)]
+
             if self.walls is None:
-                # Duvar bilgisi yoksa her hücre erişilebilir say
-                for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
-                    nr, nc = r+dr, c+dc
-                    if (0 <= nr < ROWS and 0 <= nc < COLS 
-                            and (nr, nc) not in visited):
-                        visited.add((nr, nc))
-                        queue.append((nr, nc))
-                continue
+                neighbors = [
+                    (r - 1, c),
+                    (r + 1, c),
+                    (r,     c + 1),
+                    (r,     c - 1),
+                ]
+            else:
+                cell = self.walls[r][c]
+                neighbors = []
+                if not cell.get("N", False):
+                    neighbors.append((r - 1, c))
+                if not cell.get("S", False):
+                    neighbors.append((r + 1, c))
+                if not cell.get("E", False):
+                    neighbors.append((r, c + 1))
+                if not cell.get("W", False):
+                    neighbors.append((r, c - 1))
 
-            cell = self.walls[r][c]
-            # Her yönde: duvar yoksa komşuya geç
-            neighbors = [
-                ("N", r-1, c),
-                ("S", r+1, c),
-                ("E", r,   c+1),
-                ("W", r,   c-1),
-            ]
-            for direction, nr, nc in neighbors:
-                if (0 <= nr < ROWS and 0 <= nc < COLS
-                        and not cell.get(direction, False)
-                        and (nr, nc) not in visited):
-                    visited.add((nr, nc))
-                    queue.append((nr, nc))
+            for nr, nc in neighbors:
+                if not (0 <= nr < ROWS and 0 <= nc < COLS):
+                    continue
+                if (nr, nc) in distances:
+                    continue
+                if not self._is_cell_usable(nr, nc):
+                    continue
+                distances[(nr, nc)] = d + 1
+                queue.append((nr, nc))
 
-        return visited
+        return distances
+
+    def _current_max_goal_dist_cells(self) -> int:
+        """Goals reached count'a göre kademeli büyüyen üst mesafe sınırı."""
+        if GOAL_DISTANCE_GROWTH_EPISODES <= 0:
+            return MAX_GOAL_DIST_CELLS
+        progress = min(1.0, self._goals_reached_count / float(GOAL_DISTANCE_GROWTH_EPISODES))
+        span = max(0, MAX_GOAL_DIST_CELLS - INITIAL_MAX_GOAL_DIST_CELLS)
+        return INITIAL_MAX_GOAL_DIST_CELLS + int(round(progress * span))
 
     def _pick_goal_cell(self, curr_cell):
-        r, c = curr_cell
+        distances = self._bfs_distances(curr_cell)
+        max_dist = max(MIN_GOAL_DIST_CELLS, self._current_max_goal_dist_cells())
 
-        neighbors = [
-            (r - 1, c),
-            (r + 1, c),
-            (r, c - 1),
-            (r, c + 1),
+        candidates = [
+            cell for cell, d in distances.items()
+            if cell != curr_cell
+            and MIN_GOAL_DIST_CELLS <= d <= max_dist
         ]
 
-        valid = []
-        for nr, nc in neighbors:
-            if not (0 <= nr < ROWS and 0 <= nc < COLS):
-                continue
-            if not self._is_cell_usable(nr, nc):
-                continue
-            valid.append((nr, nc))
+        # Son ziyaret edilen hedefleri filtrele (varsa alternatif)
+        recent = set(self._recent_goals)
+        filtered = [c for c in candidates if c not in recent]
+        if filtered:
+            candidates = filtered
 
-        if not valid:
+        if not candidates:
+            # Fallback: ulaşılabilir herhangi bir komşu
+            neighbors = [
+                (curr_cell[0] - 1, curr_cell[1]),
+                (curr_cell[0] + 1, curr_cell[1]),
+                (curr_cell[0],     curr_cell[1] - 1),
+                (curr_cell[0],     curr_cell[1] + 1),
+            ]
+            candidates = [
+                (nr, nc) for nr, nc in neighbors
+                if 0 <= nr < ROWS and 0 <= nc < COLS
+                and self._is_cell_usable(nr, nc)
+                and (nr, nc) in distances
+            ]
+
+        if not candidates:
             return curr_cell
 
-        return random.choice(valid)
+        return random.choice(candidates)
 
     def _publish_goal(self, goal_cell):
         gx, gy = _cell_to_world(*goal_cell)
@@ -313,6 +343,12 @@ class RouteGoalNavigator(Node):
             self.goal_cell = new_goal
             self._recent_goals.append(new_goal)
             self._recent_goals = self._recent_goals[-RECENT_GOAL_MEMORY:]
+
+            cur_max = self._current_max_goal_dist_cells()
+            self.get_logger().info(
+                f"Yeni hedef: cell={new_goal} "
+                f"(reached={self._goals_reached_count}, max_dist_cells={cur_max})"
+            )
 
         self._publish_goal(self.goal_cell)
 

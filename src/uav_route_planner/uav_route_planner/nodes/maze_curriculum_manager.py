@@ -78,6 +78,10 @@ def resolve_resource_path(raw_path, base_dir):
         return "file://" + os.path.abspath(os.path.join(base_dir, rest[1] if len(rest) == 2 else ""))
     return "file://" + os.path.abspath(os.path.join(base_dir, raw_path))
 
+def near_world_origin(x, y, radius_m=5.0):
+    return math.hypot(x, y) < radius_m
+
+
 def fix_resource_paths(root, base_dir):
     tags = {"uri", "filename", "albedo_map", "normal_map", "metalness_map",
             "roughness_map", "emissive_map", "specular_map"}
@@ -440,6 +444,9 @@ class CurriculumManager:
             for (x1, y1), (x2, y2) in actor_positions:
                 if spawned_n >= spawn_limit:
                     break
+
+                if near_world_origin(x1, y1, radius_m=5.0):
+                    continue
 
                 if not far_enough(x1, y1, used_pos, MIN_SPAWN_DIST):
                     continue

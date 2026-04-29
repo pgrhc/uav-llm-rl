@@ -50,14 +50,10 @@ class RouteCurriculumEnv(gym.Env):
     LIDAR_COLLISION_M = 0.60
     LIDAR_START_IDX = 3
     LIDAR_END_IDX = 39
-    # ── Reward thresholds ────────────────────────────────────────────────────
-    # Lidar < WARN_M → "too close" → −5 penalty each step
-    # Lidar >= WARN_M → "safe"      → +1 bonus each step
-    LIDAR_WARN_M = 2.0
+    LIDAR_WARN_M = 1.2
 
     NUM_PATH_WPS = 5
 
-    # ── Threat token layout (threat_vector[39:74] = 5 × 7) ──────────────────
     THREAT_TOKEN_OFFSET  = 39
     THREAT_TOKEN_SIZE    = 7
     THREAT_NUM_OBJECTS   = 5
@@ -80,15 +76,19 @@ class RouteCurriculumEnv(gym.Env):
     EPISODE_TIMEOUT_SEC = float(os.environ.get("ROUTE_EPISODE_TIMEOUT_SEC", "40.0"))
     RW_PROGRESS_SCALE    = float(os.environ.get("ROUTE_RW_PROGRESS_SCALE",    "1.5"))
     RW_SAFE_BONUS        = float(os.environ.get("ROUTE_RW_SAFE_BONUS",        "1.0"))
-    RW_GOAL              = float(os.environ.get("ROUTE_RW_GOAL",              "100.0"))
-    RW_TOO_CLOSE_PENALTY = float(os.environ.get("ROUTE_RW_TOO_CLOSE_PENALTY", "-2.0"))
-    RW_TIME_PENALTY      = float(os.environ.get("ROUTE_RW_TIME_PENALTY",      "-0.1"))
-    RW_COLLISION_PENALTY = float(os.environ.get("ROUTE_RW_COLLISION_PENALTY", "-50.0"))
+    RW_GOAL              = float(os.environ.get("ROUTE_RW_GOAL",              "200.0"))
+    RW_TOO_CLOSE_PENALTY = float(os.environ.get("ROUTE_RW_TOO_CLOSE_PENALTY", "-0.7"))
+    RW_TIME_PENALTY      = float(os.environ.get("ROUTE_RW_TIME_PENALTY",      "-0.02"))
+    RW_COLLISION_PENALTY = float(os.environ.get("ROUTE_RW_COLLISION_PENALTY", "-100.0"))
+    RW_TIMEOUT_PENALTY   = float(os.environ.get("ROUTE_RW_TIMEOUT_PENALTY",   "-20.0"))
     RW_SHIELD_PENALTY = float(os.environ.get("ROUTE_RW_SHIELD_PENALTY", "-1.0"))
     RW_SHIELD_BACKOFF = float(os.environ.get("ROUTE_RW_SHIELD_BACKOFF", "-1.5"))
     SHIELD_MIN_SCALE = float(os.environ.get("ROUTE_SHIELD_MIN_SCALE", "0.15"))
     SHIELD_SCALE_STEPS = int(os.environ.get("ROUTE_SHIELD_SCALE_STEPS", "6"))
     RW_PROGRESS_STEP_REWARD = float(os.environ.get("ROUTE_RW_PROGRESS_STEP_REWARD", "2.0"))
+    SHIELD_TERMINATE_ON_SEVERE = os.environ.get(
+        "ROUTE_SHIELD_TERMINATE_ON_SEVERE", "0"
+    ).lower() in ("1", "true", "yes")
 
 
     def __init__(self, curriculum_stage=1):
@@ -581,6 +581,17 @@ class RouteCurriculumEnv(gym.Env):
 
         time.sleep(self.RESET_STABILIZE_SEC)
 
+    def get_goal_position(self):
+        with self.cond:
+            gx = self._ep_goal_x if self._ep_goal_x is not None else self.goal_x
+            gy = self._ep_goal_y if self._ep_goal_y is not None else self.goal_y
+            gz = self.goal_z
+        return (
+            float(gx) if gx is not None else 0.0,
+            float(gy) if gy is not None else 0.0,
+            float(gz) if gz is not None else 0.0,
+        )
+
     def _publish_waypoint(self, wx: float, wy: float, wz: float, wyaw: float, is_residual: bool = False):
         msg = PoseStamped()
         msg.header.stamp = self.node.get_clock().now().to_msg()
@@ -714,32 +725,18 @@ class RouteCurriculumEnv(gym.Env):
 
         reward = self.RW_TIME_PENALTY 
         if shield_used:
-            if applied_scale >= 0.0:
-                correction_ratio = 1.0 - applied_scale
-            else:
-                correction_ratio = 1.0
-
-            reward += self.RW_SHIELD_PENALTY * (0.5 + correction_ratio)
-            info["shield_penalty_applied"] = True
-            info["shield_correction_ratio"] = float(correction_ratio)
-
             severe_shield = backoff_used or applied_scale == 0.0
-
-            if backoff_used:
-                reward += self.RW_SHIELD_BACKOFF
-
             if severe_shield:
+                reward += self.RW_COLLISION_PENALTY
                 terminated = True
                 info["collision"] = True
-                info["collision_type"] = "shield_backoff" if backoff_used else "shield_blocked"
+                info["collision_type"] = "shield_severe"
                 self.episode_collisions += 1
-
                 self._start_recovery()
+            else:
+                reward += self.RW_SHIELD_PENALTY
+                info["shield_penalty_applied"] = True
 
-            # terminated = True
-            # info["collision"] = True
-            # info["collision_type"] = "shield"
-            # self.episode_collisions += 1
         elif costmap_hit or actor_hit or lidar_hit:
             reward += self.RW_COLLISION_PENALTY  
             terminated = True
@@ -793,7 +790,7 @@ class RouteCurriculumEnv(gym.Env):
                         act_y = dy / act_norm
                         heading_dot = act_x * goal_dir_x + act_y * goal_dir_y
                         heading_reward = max(0.0, heading_dot)
-                        reward += 0.5 * heading_reward
+                        reward += 1.5 * heading_reward
                         info["heading_dot"] = float(heading_dot)
                         info["heading_reward"] = float(heading_reward)
 
@@ -818,6 +815,7 @@ class RouteCurriculumEnv(gym.Env):
             truncated = True
             info["timeout"] = True
             info["timeout_reason"] = "time_40s" if elapsed_sec >= self.EPISODE_TIMEOUT_SEC else "max_steps"
+            reward += self.RW_TIMEOUT_PENALTY
 
             self._start_recovery()
 

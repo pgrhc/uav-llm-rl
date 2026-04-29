@@ -1,0 +1,9 @@
+[
+  {
+    "timesteps": 5000,
+    "time": "2026-04-29T16:45:43.670055",
+    "ep_rew_mean": 0.0,
+    "ep_len_mean": 0.0,
+    "entropy": -5.714712792634964,
+    "value_loss": 24.889568412303923,
+    "approx_kl": 

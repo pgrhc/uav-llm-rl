@@ -39,6 +39,7 @@ setup(
             # Mega-world maze spawner
             'maze_curriculum_world = uav_route_planner.maze_curriculum_world:main',
             'maze_curriculum_manager = uav_route_planner.nodes.maze_curriculum_manager:main',
+            'pretrain_route = uav_route_planner.pretrain_route:main',
         ],
     },
 )

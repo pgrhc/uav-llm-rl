@@ -114,6 +114,8 @@ def _do_shutdown():
             _model = _env = _save_dir = _trajectory_recorder = None
 
 
+
+
 def _signal_handler(sig, frame):
     print("\n\nCtrl+C algilandi! Model kaydediliyor...")
     _do_shutdown()
@@ -380,7 +382,7 @@ class ProgressReporter(BaseCallback):
         self.last_report_time = now
 
 class EntropyDecayCallback(BaseCallback):
-    def __init__(self, decay=0.9995, min_ent_coef=0.005, update_freq=2048, verbose=0):
+    def __init__(self, decay=0.90, min_ent_coef=0.005, update_freq=2048, verbose=0):
         super().__init__(verbose)
         self.decay = decay
         self.min_ent_coef = min_ent_coef
@@ -394,6 +396,93 @@ class EntropyDecayCallback(BaseCallback):
             self.logger.record("train/ent_coef", new_ent)
 
         return True
+    
+
+class StepCSVRecorder(BaseCallback):
+    def __init__(self, save_path, flush_freq=1000, verbose=0):
+        super().__init__(verbose)
+        self.save_path = save_path
+        self.flush_freq = flush_freq
+        self.rows = []
+        self.episode_id = 0
+        self.step_in_episode = 0
+
+    def _on_training_start(self):
+        os.makedirs(os.path.dirname(self.save_path), exist_ok=True)
+        if not os.path.exists(self.save_path):
+            with open(self.save_path, "w") as f:
+                f.write(
+                    "timestep,episode,step_in_episode,"
+                    "drone_x,drone_y,drone_z,"
+                    "goal_x,goal_y,goal_z,"
+                    "action_dx,action_dy,action_dz,action_dyaw,"
+                    "reward,done,success,collision,timeout,"
+                    "dist_to_goal,min_lidar_m,control_source\n"
+                )
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", [])
+        dones = self.locals.get("dones", [])
+        rewards = self.locals.get("rewards", [0.0])
+        actions = self.locals.get("actions", None)
+
+        info = infos[0] if infos else {}
+        done = bool(dones[0]) if len(dones) > 0 else False
+        reward = float(rewards[0]) if len(rewards) > 0 else 0.0
+
+        try:
+            pos = _vec_env_call_method(self.training_env, "get_drone_position")
+        except Exception:
+            pos = (0.0, 0.0, 0.0)
+
+        try:
+            goal = _vec_env_call_method(self.training_env, "get_goal_position")
+        except Exception:
+            goal = (0.0, 0.0, 0.0)
+
+        if actions is not None:
+            act = np.asarray(actions[0]).ravel()
+            ax = float(act[0]) if act.size > 0 else 0.0
+            ay = float(act[1]) if act.size > 1 else 0.0
+            az = float(act[2]) if act.size > 2 else 0.0
+            ayaw = float(act[3]) if act.size > 3 else 0.0
+        else:
+            ax = ay = az = ayaw = 0.0
+
+        self.rows.append(
+            f"{self.num_timesteps},{self.episode_id},{self.step_in_episode},"
+            f"{float(pos[0])},{float(pos[1])},{float(pos[2])},"
+            f"{float(goal[0])},{float(goal[1])},{float(goal[2])},"
+            f"{ax},{ay},{az},{ayaw},"
+            f"{reward},{int(done)},"
+            f"{int(bool(info.get('success', False)))},"
+            f"{int(bool(info.get('collision', False)))},"
+            f"{int(bool(info.get('timeout', False)))},"
+            f"{float(info.get('dist_to_goal', 0.0))},"
+            f"{float(info.get('min_lidar_m', 30.0))},"
+            f"{info.get('control_source', 'unknown')}\n"
+        )
+
+        self.step_in_episode += 1
+
+        if done:
+            self.episode_id += 1
+            self.step_in_episode = 0
+
+        if len(self.rows) >= self.flush_freq:
+            self.flush()
+
+        return True
+
+    def flush(self):
+        if not self.rows:
+            return
+        with open(self.save_path, "a") as f:
+            f.writelines(self.rows)
+        self.rows = []
+
+    def _on_training_end(self):
+        self.flush()
     
 class TrainingLogWriter(BaseCallback):
     def __init__(self, log_file, log_freq=5000):
@@ -454,6 +543,9 @@ class PlotSaverCallback(BaseCallback):
         self._ep_lengths    = deque(maxlen=window)
         self._ep_rewards    = deque(maxlen=window)
         self._ep_min_lidar  = deque(maxlen=window)
+
+
+    
 
     def _on_step(self) -> bool:
         if not HAS_MATPLOTLIB:
@@ -741,7 +833,11 @@ def main(args=None):
             save_freq=50_000,
             verbose=1,
         ),
-        EntropyDecayCallback(decay=0.9995, min_ent_coef=0.005, update_freq=9000),
+        EntropyDecayCallback(decay=0.90, min_ent_coef=0.005, update_freq=9000),
+        StepCSVRecorder(
+            save_path=os.path.join(log_dir, "step_goal_action_log.csv"),
+            flush_freq=1000,
+        ),
     ])
 
     print("\nEgitim basliyor...\n", flush=True)
