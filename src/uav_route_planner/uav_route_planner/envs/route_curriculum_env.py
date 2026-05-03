@@ -50,7 +50,7 @@ class RouteCurriculumEnv(gym.Env):
     LIDAR_COLLISION_M = 0.60
     LIDAR_START_IDX = 3
     LIDAR_END_IDX = 39
-    LIDAR_WARN_M = 1.2
+    LIDAR_WARN_M = 1.4
 
     NUM_PATH_WPS = 5
 
@@ -74,15 +74,15 @@ class RouteCurriculumEnv(gym.Env):
     ACTOR_COLLISION_RADIUS = 1.5
     ACTOR_COLLISION_Z_MAX = 3.5
     EPISODE_TIMEOUT_SEC = float(os.environ.get("ROUTE_EPISODE_TIMEOUT_SEC", "40.0"))
-    RW_PROGRESS_SCALE    = float(os.environ.get("ROUTE_RW_PROGRESS_SCALE",    "1.5"))
+    RW_PROGRESS_SCALE    = float(os.environ.get("ROUTE_RW_PROGRESS_SCALE",    "1.0"))
     RW_SAFE_BONUS        = float(os.environ.get("ROUTE_RW_SAFE_BONUS",        "1.0"))
     RW_GOAL              = float(os.environ.get("ROUTE_RW_GOAL",              "200.0"))
-    RW_TOO_CLOSE_PENALTY = float(os.environ.get("ROUTE_RW_TOO_CLOSE_PENALTY", "-0.7"))
+    RW_TOO_CLOSE_PENALTY = float(os.environ.get("ROUTE_RW_TOO_CLOSE_PENALTY", "-1.5"))
     RW_TIME_PENALTY      = float(os.environ.get("ROUTE_RW_TIME_PENALTY",      "-0.02"))
-    RW_COLLISION_PENALTY = float(os.environ.get("ROUTE_RW_COLLISION_PENALTY", "-100.0"))
-    RW_TIMEOUT_PENALTY   = float(os.environ.get("ROUTE_RW_TIMEOUT_PENALTY",   "-20.0"))
+    RW_COLLISION_PENALTY = float(os.environ.get("ROUTE_RW_COLLISION_PENALTY", "-200.0"))
+    RW_TIMEOUT_PENALTY   = float(os.environ.get("ROUTE_RW_TIMEOUT_PENALTY",   "-40.0"))
     RW_SHIELD_PENALTY = float(os.environ.get("ROUTE_RW_SHIELD_PENALTY", "-1.0"))
-    RW_SHIELD_BACKOFF = float(os.environ.get("ROUTE_RW_SHIELD_BACKOFF", "-1.5"))
+    RW_SHIELD_BACKOFF = float(os.environ.get("ROUTE_RW_SHIELD_BACKOFF", "-2.5"))
     SHIELD_MIN_SCALE = float(os.environ.get("ROUTE_SHIELD_MIN_SCALE", "0.15"))
     SHIELD_SCALE_STEPS = int(os.environ.get("ROUTE_SHIELD_SCALE_STEPS", "6"))
     RW_PROGRESS_STEP_REWARD = float(os.environ.get("ROUTE_RW_PROGRESS_STEP_REWARD", "2.0"))
@@ -668,7 +668,7 @@ class RouteCurriculumEnv(gym.Env):
             self.action_ema_alpha * raw_action
             + (1.0 - self.action_ema_alpha) * self.smoothed_action
         )
-        current_step_size = 1.20
+        current_step_size = self.STEP_SIZE
 
         dx = float(self.smoothed_action[0]) * current_step_size
         dy = float(self.smoothed_action[1]) * current_step_size
@@ -790,7 +790,7 @@ class RouteCurriculumEnv(gym.Env):
                         act_y = dy / act_norm
                         heading_dot = act_x * goal_dir_x + act_y * goal_dir_y
                         heading_reward = max(0.0, heading_dot)
-                        reward += 1.5 * heading_reward
+                        reward += 1.0 * heading_reward
                         info["heading_dot"] = float(heading_dot)
                         info["heading_reward"] = float(heading_reward)
 
