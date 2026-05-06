@@ -126,8 +126,8 @@ class CurriculumScheduler(BaseCallback):
     @staticmethod
     def default_stage_ranges():
         t = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "1000000"))
-        s1 = int(os.environ.get("ROUTE_STAGE1_END", "550000"))
-        s2 = int(os.environ.get("ROUTE_STAGE2_END", "800000"))
+        s1 = int(os.environ.get("ROUTE_STAGE1_END", "300000"))
+        s2 = int(os.environ.get("ROUTE_STAGE2_END", "550000"))
         s1 = max(0, min(s1, t))
         s2 = max(s1, min(s2, t))
         return {1: (0, s1), 2: (s1, s2), 3: (s2, t)}
@@ -184,11 +184,11 @@ class CurriculumScheduler(BaseCallback):
             except Exception as e:
                 print(f"Aktor spawn hatasi: {e}")
 
-        try:
-            self.model.policy.optimizer.state.clear()
-            print(f"[CurriculumScheduler] Adam optimizer momentum reset for Stage {stage}.")
-        except Exception as e:
-            print(f"[CurriculumScheduler] Optimizer reset failed (non-fatal): {e}")
+        # try:
+        #     self.model.policy.optimizer.state.clear()
+        #     print(f"[CurriculumScheduler] Adam optimizer momentum reset for Stage {stage}.")
+        # except Exception as e:
+        #     print(f"[CurriculumScheduler] Optimizer reset failed (non-fatal): {e}")
 
         try:
             self.model.ep_info_buffer.clear()
@@ -694,7 +694,7 @@ class PlotSaverCallback(BaseCallback):
             self._save_plots()
 
 
-TOTAL_TIMESTEPS = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "550000"))
+TOTAL_TIMESTEPS = int(os.environ.get("ROUTE_TOTAL_TIMESTEPS", "1000000"))
 
 
 def main(args=None):
@@ -771,13 +771,13 @@ def main(args=None):
 
     HYPERPARAMS = {
         "learning_rate": 3e-4,
-        "n_steps":       2048,
+        "n_steps":       4096,
         "batch_size":    256,
-        "n_epochs":      10,
+        "n_epochs":      15,
         "gamma":         0.99,
         "gae_lambda":    0.95,
         "clip_range":    0.2,
-        "ent_coef":      0.05,
+        "ent_coef":      0.02,
         "vf_coef":       0.5,
         "max_grad_norm": 0.5,
     }
@@ -787,7 +787,7 @@ def main(args=None):
         norm_obs=True,
         norm_reward=False,
         clip_obs=10.0,
-        # clip_reward=10.0,
+        #clip_reward=10.0,
         gamma=HYPERPARAMS["gamma"],
     )
     _env = env

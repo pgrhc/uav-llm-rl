@@ -28,10 +28,12 @@ class RouteCombinedExtractor(BaseFeaturesExtractor):
             nn.ReLU(),
         )
 
+        # Extractor içinde goal_mlp'yi şu şekilde güçlendirmeyi dene:
         self.goal_mlp = nn.Sequential(
-            nn.Linear(7, 64),
+            nn.Linear(7, 128), # Daha geniş giriş
             nn.ReLU(),
-            nn.Linear(64, 64),
+            nn.LayerNorm(128), # Veriyi normalize et ki baskın olsun
+            nn.Linear(128, 64),
             nn.ReLU(),
         )
 
@@ -43,7 +45,7 @@ class RouteCombinedExtractor(BaseFeaturesExtractor):
         threat_emb = self.threat_mlp(threat)
         score_emb = self.scores_mlp(scores)
         goal_emb = self.goal_mlp(goal)
-
+        goal_emb = goal_emb * 1.3
         return torch.cat(
             [threat_emb, score_emb, goal_emb], dim=1
         )
