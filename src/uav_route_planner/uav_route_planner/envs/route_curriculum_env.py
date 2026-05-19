@@ -50,7 +50,7 @@ class RouteCurriculumEnv(gym.Env):
     LIDAR_COLLISION_M = 0.60
     LIDAR_START_IDX = 3
     LIDAR_END_IDX = 39
-    LIDAR_WARN_M = 1.0
+    LIDAR_WARN_M = 1.5
 
     NUM_PATH_WPS = 5
 
@@ -774,11 +774,11 @@ class RouteCurriculumEnv(gym.Env):
         else:
             if self.prev_dist_to_goal is not None:
                 progress = self.prev_dist_to_goal - dist
-                positive_progress = max(0.0, progress)
-                reward += self.RW_PROGRESS_SCALE * positive_progress
+                # positive_progress = max(0.0, progress)
+                reward += self.RW_PROGRESS_SCALE * progress
                 if np.isfinite(progress):
                     info["progress"] = float(progress)
-                    info["positive_progress"] = float(positive_progress)
+                    # info["positive_progress"] = float(positive_progress)
             with self.cond:
                 gx = self._ep_goal_x
                 gy = self._ep_goal_y
@@ -796,32 +796,27 @@ class RouteCurriculumEnv(gym.Env):
                         act_y = dy / act_norm
                         heading_dot = act_x * goal_dir_x + act_y * goal_dir_y
                         #heading_reward = max(0.0, heading_dot)
-                        if shield_used or min_lidar_m < self.LIDAR_WARN_M:
-                            heading_reward = -0.5 # Hatta hafif ceza ver ki o yöne bakmaktan vazgeçsin
-                        else:
-                            heading_reward =  heading_dot
+                        heading_reward =   heading_dot
                         reward += heading_reward
                         info["heading_dot"] = float(heading_dot)
                         info["heading_reward"] = float(heading_reward)
 
 
             # if min_lidar_m < self.LIDAR_WARN_M:
-            #     reward += self.RW_TOO_CLOSE_PENALTY   
+            #     reward -= 2.0 * (self.LIDAR_WARN_M - min_lidar_m)
             #     info["too_close"] = True
             #     if hasattr(self, '_prev_min_lidar_m'):
             #         escape_delta = min_lidar_m - self._prev_min_lidar_m
-            #         if escape_delta > 0.05:
-            #             reward += 0.5 * escape_delta
+            #         if escape_delta > 0.03:
+            #             reward += 3.0 * escape_delta
             #             info["wall_escape_bonus"] = True
             # else:
             #     reward += 0.02 
             #     info["too_close"] = False
-
             # self._prev_min_lidar_m = min_lidar_m
-            # Too-close cezası kaldırıldı.
+    
            
-            info["too_close"] = bool(min_lidar_m < self.LIDAR_WARN_M)
-            self._prev_min_lidar_m = min_lidar_m
+            
 
         elapsed_sec = time.time() - self.episode_start_time
 

@@ -107,14 +107,39 @@ class RouteGoalNavigator(Node):
     def _neighbors(self, r, c):
         if self.walls is None:
             raw = [(r - 1, c), (r + 1, c), (r, c + 1), (r, c - 1)]
-        else:
-            cell = self.walls[r][c]
-            raw = []
-            if not cell.get("N", False): raw.append((r - 1, c))
-            if not cell.get("S", False): raw.append((r + 1, c))
-            if not cell.get("E", False): raw.append((r, c + 1))
-            if not cell.get("W", False): raw.append((r, c - 1))
-        return [(nr, nc) for nr, nc in raw if 0 <= nr < ROWS and 0 <= nc < COLS]
+            return [(nr, nc) for nr, nc in raw if 0 <= nr < ROWS and 0 <= nc < COLS]
+
+        cell = self.walls[r][c]
+        raw = []
+
+        # Hem mevcut hücrenin duvarına hem komşu hücrenin ters duvarına bakıyoruz.
+        # Böylece JSON'da tek taraflı duvar hatası varsa da duvar arkası hedef seçilmez.
+
+        # North
+        if r - 1 >= 0:
+            neighbor = self.walls[r - 1][c]
+            if not cell.get("N", False) and not neighbor.get("S", False):
+                raw.append((r - 1, c))
+
+        # South
+        if r + 1 < ROWS:
+            neighbor = self.walls[r + 1][c]
+            if not cell.get("S", False) and not neighbor.get("N", False):
+                raw.append((r + 1, c))
+
+        # East
+        if c + 1 < COLS:
+            neighbor = self.walls[r][c + 1]
+            if not cell.get("E", False) and not neighbor.get("W", False):
+                raw.append((r, c + 1))
+
+        # West
+        if c - 1 >= 0:
+            neighbor = self.walls[r][c - 1]
+            if not cell.get("W", False) and not neighbor.get("E", False):
+                raw.append((r, c - 1))
+
+        return [(nr, nc) for nr, nc in raw if self._is_cell_usable(nr, nc)]
 
     def _bfs_distances(self, start_cell):
         from collections import deque
@@ -186,52 +211,65 @@ class RouteGoalNavigator(Node):
 
     def _pick_goal_cell(self, curr_cell):
         spawn_cell = DRONE_SPAWN_CELL
-        distances = self._bfs_distances(spawn_cell)
+
+        # Hedef uzaklığı yine SPAWN CELL'e göre hesaplanıyor
+        distances_from_spawn = self._bfs_distances(spawn_cell)
+
         max_dist = max(MIN_GOAL_DIST_CELLS, self._current_max_goal_dist_cells())
 
-        # Kural 1: Mevcut hücre (örneğin 0,0) ASLA yeni hedef olamaz.
-        # Kural 2: Hafızada olan yakın geçmiş hedefler tercih edilmez.
+        def reachable_from_current(cell):
+            path = self._find_path_cells(curr_cell, cell)
+            return len(path) > 1
+
         candidates = [
-            c for c, d in distances.items() 
-            if MIN_GOAL_DIST_CELLS <= d <= max_dist 
-            and c not in self._recent_goals 
-            and c != curr_cell 
+            c for c, d in distances_from_spawn.items()
+            if MIN_GOAL_DIST_CELLS <= d <= max_dist
+            and c not in self._recent_goals
+            and c != curr_cell
             and c != spawn_cell
+            and reachable_from_current(c)
         ]
 
         if candidates:
             return random.choice(candidates)
 
-        # Fallback 1: Sadece hafızayı (recent_goals) esnet
         fallback_1 = [
-            c for c, d in distances.items() 
-            if MIN_GOAL_DIST_CELLS <= d <= max_dist 
-            and c != curr_cell 
+            c for c, d in distances_from_spawn.items()
+            if MIN_GOAL_DIST_CELLS <= d <= max_dist
+            and c != curr_cell
             and c != spawn_cell
+            and reachable_from_current(c)
         ]
+
         if fallback_1:
             self.get_logger().warn("Hafıza filtresi esnetildi.")
             return random.choice(fallback_1)
 
-        # Fallback 2: Mesafeyi esnet (1 hücre uzağa kadar izin ver, ama KENDİ HÜCRESİ asla)
         fallback_2 = [
-            c for c, d in distances.items() 
-            if 1 <= d <= max_dist 
-            and c != curr_cell 
+            c for c, d in distances_from_spawn.items()
+            if 1 <= d <= max_dist
+            and c != curr_cell
             and c != spawn_cell
+            and reachable_from_current(c)
         ]
+
         if fallback_2:
             self.get_logger().warn("Mesafe filtresi esnetildi.")
             return random.choice(fallback_2)
 
-        # Fallback 3: Kendi hücresi ve spawn hücresi dışındaki HERHANGİ BİR YER
-        fallback_3 = [c for c in distances.keys() if c != curr_cell and c != spawn_cell]
+        fallback_3 = [
+            c for c in distances_from_spawn.keys()
+            if c != curr_cell
+            and c != spawn_cell
+            and reachable_from_current(c)
+        ]
+
         if fallback_3:
+            self.get_logger().warn("Spawn'a göre erişilebilir herhangi bir hedef seçildi.")
             return random.choice(fallback_3)
 
-        self.get_logger().error("CİDDİ HATA: Haritada gidilecek hiçbir yer yok!")
-        # Drone kilitlenmesin diye manuel olarak en azından x ekseninde 1 birim kaydır
-        return (curr_cell[0], min(COLS - 1, curr_cell[1] + 1))
+        self.get_logger().error("CİDDİ HATA: Spawn'a göre seçilebilecek ve mevcut konumdan erişilebilir hedef yok!")
+        return None    
 
     def _publish_goal(self, goal_cell):
         gx, gy = _cell_to_world(*goal_cell)
